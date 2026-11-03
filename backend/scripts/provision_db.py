@@ -137,16 +137,32 @@ def run_provisioning() -> None:
                     )
                 )
 
-                # Default privileges for tables and sequences created by migrator
+                # Default privileges for tables and sequences created by migrator:
+                # 1. Reset any existing default privileges on tables to avoid permission drift
                 cur.execute(
                     sql.SQL("""
                         ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
-                        GRANT SELECT, INSERT, UPDATE ON TABLES TO {}
+                        REVOKE ALL ON TABLES FROM {}
                     """).format(
                         sql.Identifier(MIGRATOR_USER), sql.Identifier(APP_USER)
                     )
                 )
 
+                # 2. Grant ONLY SELECT and INSERT on future tables.
+                # Strictly NO table-level UPDATE, DELETE, or TRUNCATE.
+                # Note: Specific column-level UPDATE on 'transactions' and 'analyst_cases',
+                # and runtime read-only lock (REVOKE INSERT) on 'merchants' are applied
+                # post-migration in Phase 2 once table catalog objects exist.
+                cur.execute(
+                    sql.SQL("""
+                        ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
+                        GRANT SELECT, INSERT ON TABLES TO {}
+                    """).format(
+                        sql.Identifier(MIGRATOR_USER), sql.Identifier(APP_USER)
+                    )
+                )
+
+                # 3. Grant sequence USAGE and SELECT for autoincrementing ID generation
                 cur.execute(
                     sql.SQL("""
                         ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
