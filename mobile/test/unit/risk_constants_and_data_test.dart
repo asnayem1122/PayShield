@@ -5,50 +5,96 @@ import 'package:mobile/features/transactions/domain/transaction_model.dart';
 
 void main() {
   group('AppRiskConstants Unit Tests', () {
-    test('Validates score strictly between 0 and 100', () {
+    test('Validates score strictly between 0 and 100 with explicit ArgumentError', () {
+      // Boundary valid values
       expect(() => AppRiskConstants.validateScore(0), returnsNormally);
-      expect(() => AppRiskConstants.validateScore(50), returnsNormally);
-      expect(() => AppRiskConstants.validateScore(100), returnsNormally);
+      expect(AppRiskConstants.isValidScore(0), isTrue);
 
-      expect(() => AppRiskConstants.validateScore(-1), throwsArgumentError);
-      expect(() => AppRiskConstants.validateScore(101), throwsArgumentError);
-      expect(() => AppRiskConstants.validateScore(-50), throwsArgumentError);
-      expect(() => AppRiskConstants.validateScore(999), throwsArgumentError);
+      expect(() => AppRiskConstants.validateScore(50), returnsNormally);
+      expect(AppRiskConstants.isValidScore(50), isTrue);
+
+      expect(() => AppRiskConstants.validateScore(100), returnsNormally);
+      expect(AppRiskConstants.isValidScore(100), isTrue);
+
+      // Boundary invalid values
+      expect(() => AppRiskConstants.validateScore(-1), throwsA(isA<ArgumentError>()));
+      expect(AppRiskConstants.isValidScore(-1), isFalse);
+
+      expect(() => AppRiskConstants.validateScore(101), throwsA(isA<ArgumentError>()));
+      expect(AppRiskConstants.isValidScore(101), isFalse);
+
+      expect(() => AppRiskConstants.validateScore(-50), throwsA(isA<ArgumentError>()));
+      expect(AppRiskConstants.isValidScore(-50), isFalse);
+
+      expect(() => AppRiskConstants.validateScore(999), throwsA(isA<ArgumentError>()));
+      expect(AppRiskConstants.isValidScore(999), isFalse);
     });
 
     test('Maps risk score to correct RiskLevel and RiskAction', () {
       expect(AppRiskConstants.getLevelForScore(0), equals(RiskLevel.low));
       expect(AppRiskConstants.getLevelForScore(39), equals(RiskLevel.low));
+      expect(AppRiskConstants.getActionForScore(0), equals(RiskAction.approve));
       expect(AppRiskConstants.getActionForScore(39), equals(RiskAction.approve));
 
       expect(AppRiskConstants.getLevelForScore(40), equals(RiskLevel.medium));
       expect(AppRiskConstants.getLevelForScore(74), equals(RiskLevel.medium));
+      expect(AppRiskConstants.getActionForScore(40), equals(RiskAction.review));
       expect(AppRiskConstants.getActionForScore(74), equals(RiskAction.review));
 
       expect(AppRiskConstants.getLevelForScore(75), equals(RiskLevel.high));
       expect(AppRiskConstants.getLevelForScore(91), equals(RiskLevel.high));
       expect(AppRiskConstants.getLevelForScore(100), equals(RiskLevel.high));
+      expect(AppRiskConstants.getActionForScore(75), equals(RiskAction.block));
       expect(AppRiskConstants.getActionForScore(91), equals(RiskAction.block));
+      expect(AppRiskConstants.getActionForScore(100), equals(RiskAction.block));
+
+      // Out-of-bounds score mapping throws ArgumentError
+      expect(() => AppRiskConstants.getLevelForScore(-1), throwsA(isA<ArgumentError>()));
+      expect(() => AppRiskConstants.getLevelForScore(101), throwsA(isA<ArgumentError>()));
+      expect(() => AppRiskConstants.getActionForScore(-1), throwsA(isA<ArgumentError>()));
+      expect(() => AppRiskConstants.getActionForScore(101), throwsA(isA<ArgumentError>()));
     });
 
-    test('Transaction entity rejects invalid risk score in constructor', () {
-      expect(
-        () => Transaction(
-          id: 'test_invalid',
-          amount: 500,
-          merchantName: 'Test Store',
-          merchantCategory: 'Retail',
-          riskScore: 105, // Invalid
-          riskFactors: const [],
-          deviceModel: 'Test Device',
-          isNewDevice: false,
-          location: 'Dhaka',
-          transactionsLastHour: 1,
-          previousChargebacks: 0,
-          timestamp: DateTime.now(),
-        ),
-        throwsArgumentError,
-      );
+    test('Transaction entity constructor rejects invalid scores with ArgumentError and accepts 0 and 100', () {
+      Transaction createTx(int score) => Transaction(
+            id: 'test_tx_$score',
+            amount: 500,
+            merchantName: 'Test Store',
+            merchantCategory: 'Retail',
+            riskScore: score,
+            riskFactors: const [],
+            deviceModel: 'Test Device',
+            isNewDevice: false,
+            location: 'Dhaka',
+            transactionsLastHour: 1,
+            previousChargebacks: 0,
+            timestamp: DateTime(2026, 11, 4),
+          );
+
+      // Score -1 must throw ArgumentError (not AssertionError)
+      expect(() => createTx(-1), throwsA(isA<ArgumentError>()));
+
+      // Score 101 must throw ArgumentError (not AssertionError)
+      expect(() => createTx(101), throwsA(isA<ArgumentError>()));
+
+      // Score 0 must be accepted
+      expect(() => createTx(0), returnsNormally);
+      final tx0 = createTx(0);
+      expect(tx0.riskScore, equals(0));
+      expect(tx0.riskLevel, equals(RiskLevel.low));
+      expect(tx0.recommendedAction, equals(RiskAction.approve));
+
+      // Score 100 must be accepted
+      expect(() => createTx(100), returnsNormally);
+      final tx100 = createTx(100);
+      expect(tx100.riskScore, equals(100));
+      expect(tx100.riskLevel, equals(RiskLevel.high));
+      expect(tx100.recommendedAction, equals(RiskAction.block));
+
+      // copyWith must also enforce ArgumentError
+      expect(() => tx0.copyWith(riskScore: -1), throwsA(isA<ArgumentError>()));
+      expect(() => tx0.copyWith(riskScore: 101), throwsA(isA<ArgumentError>()));
+      expect(() => tx0.copyWith(riskScore: 100), returnsNormally);
     });
   });
 

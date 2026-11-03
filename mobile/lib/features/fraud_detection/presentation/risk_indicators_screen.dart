@@ -97,13 +97,13 @@ class RiskIndicatorsScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: AppSpacing.md),
 
-                  if (tx.riskScore > 74) ...[
+                  if (tx.riskLevel == RiskLevel.high) ...[
                     _buildFactorBar('Unrecognized New Device', 35, colors.blockText, colors),
                     const SizedBox(height: AppSpacing.sm),
                     _buildFactorBar('High 1-Hour Velocity (${tx.transactionsLastHour} tx)', 30, colors.blockText, colors),
                     const SizedBox(height: AppSpacing.sm),
                     _buildFactorBar('Location Anomaly (${tx.location})', 26, colors.reviewText, colors),
-                  ] else if (tx.riskScore > 39) ...[
+                  ] else if (tx.riskLevel == RiskLevel.medium) ...[
                     _buildFactorBar('Unusual Transaction Amount', 28, colors.reviewText, colors),
                     const SizedBox(height: AppSpacing.sm),
                     _buildFactorBar('Time-of-Day Deviation', 18, colors.reviewText, colors),

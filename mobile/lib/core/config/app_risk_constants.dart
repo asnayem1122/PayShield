@@ -16,16 +16,20 @@ class AppRiskConstants {
 
   /// Validates that a risk score is strictly an integer within [0, 100].
   ///
-  /// Throws [ArgumentError] if the score is out of bounds.
+  /// Throws [ArgumentError] if the score is out of bounds (< 0 or > 100).
+  /// This guarantees explicit runtime validation in both debug and release builds.
   static void validateScore(int score) {
     if (score < minScore || score > maxScore) {
       throw ArgumentError.value(
         score,
-        'score',
+        'riskScore',
         'Risk score must be an integer between $minScore and $maxScore inclusive.',
       );
     }
   }
+
+  /// Returns true if [score] is an integer within [0, 100].
+  static bool isValidScore(int score) => score >= minScore && score <= maxScore;
 
   /// Determines [RiskLevel] for a validated risk score.
   static RiskLevel getLevelForScore(int score) {

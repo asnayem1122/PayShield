@@ -34,6 +34,8 @@ class Transaction {
     this.analystResolution,
     this.analystNotes,
   }) {
+    // Explicit runtime validation guarantees invalid risk scores (< 0 or > 100)
+    // throw ArgumentError even in release builds where assertions are disabled.
     AppRiskConstants.validateScore(riskScore);
   }
 
