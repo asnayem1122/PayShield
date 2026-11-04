@@ -509,9 +509,16 @@ class DashboardScreen extends ConsumerWidget {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    final amount = Money.fromDecimalString(
-                      amountController.text.trim().isEmpty ? '5000.00' : amountController.text.trim(),
-                    );
+                    Money amount;
+                    try {
+                      var text = amountController.text.trim();
+                      if (text.isEmpty) text = '5000.00';
+                      if (!text.contains('.')) text = '$text.00';
+                      amount = Money.fromDecimalString(text);
+                      if (amount.minorUnits <= 0) amount = Money.fromMajor(5000);
+                    } catch (_) {
+                      amount = Money.fromMajor(5000);
+                    }
                     final newTx = Transaction(
                       id: 'tx_demo_${DateTime.now().millisecondsSinceEpoch}',
                       amount: amount,

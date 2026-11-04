@@ -229,7 +229,7 @@ def upgrade() -> None:
 
     # Grant strictly approved column-level UPDATE
     op.execute("GRANT UPDATE (transaction_status, updated_at) ON TABLE transactions TO payshield_app")
-    op.execute("GRANT UPDATE (case_status, resolution_note, resolved_at, updated_at) ON TABLE analyst_cases TO payshield_app")
+    op.execute("GRANT UPDATE (case_status, assigned_analyst, resolution_note, resolved_at, updated_at) ON TABLE analyst_cases TO payshield_app")
 
 
 def downgrade() -> None:

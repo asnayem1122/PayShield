@@ -36,7 +36,34 @@ void main() {
       expect(sum.toDecimalString(), equals('281714.50'));
     });
 
-    test('Rejects floating-point arithmetic errors on repeated fractional addition', () {
+    test('Parses valid positive decimal strings up to NUMERIC(12, 2) maximum', () {
+      final validTypical = Money.fromDecimalString('1250.00');
+      expect(validTypical.minorUnits, equals(125000));
+      expect(validTypical.toDecimalString(), equals('1250.00'));
+
+      final maxMoney = Money.fromDecimalString('9999999999.99');
+      expect(maxMoney.minorUnits, equals(999999999999));
+      expect(maxMoney.toDecimalString(), equals('9999999999.99'));
+    });
+
+    test('Rejects malformed strings, invalid decimals, and bounds overflow', () {
+      // Malformed string
+      expect(() => Money.fromDecimalString('abc'), throwsA(isA<FormatException>()));
+
+      // More than two decimal places
+      expect(() => Money.fromDecimalString('12.345'), throwsA(isA<FormatException>()));
+
+      // Single decimal place
+      expect(() => Money.fromDecimalString('12.3'), throwsA(isA<FormatException>()));
+
+      // Missing decimal point
+      expect(() => Money.fromDecimalString('1250'), throwsA(isA<FormatException>()));
+
+      // More than ten integer digits (exceeds NUMERIC(12, 2) max)
+      expect(() => Money.fromDecimalString('10000000000.00'), throwsA(isA<FormatException>()));
+    });
+
+    test('Repeated addition preserves exact integer minor units without floating-point error', () {
       var acc = Money.zero;
       for (var i = 0; i < 10; i++) {
         acc += Money.fromDecimalString('0.10');
@@ -51,7 +78,7 @@ void main() {
       final json = {
         'id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
         'reference': 'tx_app_1157',
-        'counterparty_name': 'Shadhin Pay',
+        'counterparty_name': 'PayShield Demo Merchant',
         'amount': '1514.00',
         'currency': 'BDT',
         'channel': 'MOBILE_APP',
@@ -76,29 +103,111 @@ void main() {
       expect(tx.location, equals('Dhaka'));
     });
 
-    test('Transaction.toJson accurately produces decimal wire format', () {
-      final tx = Transaction(
-        id: 'tx_app_1157',
-        amount: Money.fromMajor(1514),
-        currency: 'BDT',
-        merchantName: 'Shadhin Pay',
-        merchantCategory: 'Retail',
-        riskScore: 25,
-        riskFactors: const ['NEW_DEVICE'],
-        deviceModel: 'Samsung Galaxy A53',
-        isNewDevice: true,
-        location: 'Dhaka',
-        transactionsLastHour: 1,
-        previousChargebacks: 0,
-        timestamp: DateTime.parse('2026-11-04T05:22:15.000Z'),
-        analystResolution: 'MARK_LEGITIMATE',
+    test('Transaction.fromJson strictly rejects JSON numbers and non-string amounts', () {
+      final numericJson = {
+        'reference': 'tx_invalid_1',
+        'amount': 1250.00, // JSON double - must be rejected
+      };
+      expect(() => Transaction.fromJson(numericJson), throwsA(isA<FormatException>()));
+
+      final intJson = {
+        'reference': 'tx_invalid_2',
+        'amount': 1250, // JSON int - must be rejected
+      };
+      expect(() => Transaction.fromJson(intJson), throwsA(isA<FormatException>()));
+    });
+
+    test('Transaction.fromJson strictly rejects missing or null amount field', () {
+      final missingAmount = {
+        'reference': 'tx_invalid_3',
+      };
+      expect(() => Transaction.fromJson(missingAmount), throwsA(isA<FormatException>()));
+
+      final nullAmount = {
+        'reference': 'tx_invalid_4',
+        'amount': null,
+      };
+      expect(() => Transaction.fromJson(nullAmount), throwsA(isA<FormatException>()));
+    });
+
+    test('Transaction.fromJson strictly rejects non-positive transaction amounts', () {
+      final zeroJson = {
+        'reference': 'tx_invalid_zero',
+        'amount': '0.00',
+      };
+      expect(() => Transaction.fromJson(zeroJson), throwsA(isA<FormatException>()));
+
+      final negativeJson = {
+        'reference': 'tx_invalid_neg',
+        'amount': '-10.00',
+      };
+      expect(() => Transaction.fromJson(negativeJson), throwsA(isA<FormatException>()));
+    });
+
+    test('Transaction constructor rejects zero or negative amounts', () {
+      expect(
+        () => Transaction(
+          id: 'tx_test_zero',
+          amount: Money.zero,
+          merchantName: 'PayShield Demo Merchant',
+          merchantCategory: 'Retail',
+          riskScore: 20,
+          riskFactors: const [],
+          deviceModel: 'Test Device',
+          isNewDevice: false,
+          location: 'Dhaka',
+          transactionsLastHour: 1,
+          previousChargebacks: 0,
+          timestamp: DateTime.now(),
+        ),
+        throwsA(isA<ArgumentError>()),
       );
 
-      final json = tx.toJson();
-      expect(json['reference'], equals('tx_app_1157'));
-      expect(json['amount'], equals('1514.00'));
-      expect(json['currency'], equals('BDT'));
-      expect(json['transaction_status'], equals('APPROVED'));
+      expect(
+        () => Transaction(
+          id: 'tx_test_neg',
+          amount: Money.fromDecimalString('-10.00'),
+          merchantName: 'PayShield Demo Merchant',
+          merchantCategory: 'Retail',
+          riskScore: 20,
+          riskFactors: const [],
+          deviceModel: 'Test Device',
+          isNewDevice: false,
+          location: 'Dhaka',
+          transactionsLastHour: 1,
+          previousChargebacks: 0,
+          timestamp: DateTime.now(),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('Transaction decimal serialization round trip', () {
+      final original = Transaction(
+        id: 'tx_roundtrip_1001',
+        amount: Money.fromDecimalString('2630.00'),
+        currency: 'BDT',
+        merchantName: 'PayShield Demo Merchant',
+        merchantCategory: 'Retail',
+        riskScore: 35,
+        riskFactors: const ['NEW_DEVICE'],
+        deviceModel: 'Customer Handset',
+        isNewDevice: true,
+        location: 'Chittagong',
+        transactionsLastHour: 2,
+        previousChargebacks: 0,
+        timestamp: DateTime.parse('2026-11-04T00:00:00.000Z'),
+      );
+
+      final json = original.toJson();
+      expect(json['amount'], equals('2630.00'));
+      expect(json['amount'], isA<String>());
+
+      final restored = Transaction.fromJson(json);
+      expect(restored.id, equals(original.id));
+      expect(restored.amount, equals(original.amount));
+      expect(restored.amount.toDecimalString(), equals('2630.00'));
+      expect(restored.currency, equals('BDT'));
     });
   });
 }

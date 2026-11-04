@@ -4,49 +4,71 @@ import 'package:intl/intl.dart';
 ///
 /// Stores financial amounts internally as integer minor units (poisha / cents),
 /// where 100 minor units = 1.00 major unit (e.g., 151400 minor units = ৳ 1,514.00).
-/// Prevents IEEE 754 floating-point inaccuracies in financial aggregation.
+/// Prevents IEEE 754 floating-point inaccuracies in financial calculations.
+/// Enforces PostgreSQL NUMERIC(12, 2) boundaries (up to 10 integer digits and 2 decimals).
 class Money implements Comparable<Money> {
   final int minorUnits;
 
-  const Money(this.minorUnits);
-  const Money.fromMinorUnits(this.minorUnits);
+  static final RegExp _decimalPattern = RegExp(r'^-?\d{1,10}\.\d{2}$');
+
+  /// Maximum minor units representing PostgreSQL NUMERIC(12, 2) max: 9,999,999,999.99 BDT
+  static const int maxMinorUnits = 999999999999;
+  static const int minMinorUnits = -999999999999;
+
+  const Money(this.minorUnits)
+      : assert(
+          minorUnits >= minMinorUnits && minorUnits <= maxMinorUnits,
+          'Money minorUnits exceeds NUMERIC(12, 2) bounds: $minorUnits',
+        );
+
+  const Money.fromMinorUnits(this.minorUnits)
+      : assert(
+          minorUnits >= minMinorUnits && minorUnits <= maxMinorUnits,
+          'Money minorUnits exceeds NUMERIC(12, 2) bounds: $minorUnits',
+        );
 
   static const Money zero = Money(0);
 
-  /// Parse from decimal string e.g. "1514.00" without floating-point conversion.
+  /// Parse from strict 2-decimal string (e.g. "1250.00", "9999999999.99") without floating-point conversion.
+  /// Rejects strings that do not have exactly 2 decimal places, exceed 10 integer digits, or contain invalid characters.
   factory Money.fromDecimalString(String value) {
     final trimmed = value.trim();
-    if (trimmed.isEmpty) return Money.zero;
+    if (!_decimalPattern.hasMatch(trimmed)) {
+      throw FormatException(
+        'Invalid decimal money format: "$value". Expected 1-10 integer digits and exactly 2 decimal places (e.g., "1250.00").',
+      );
+    }
 
     final isNegative = trimmed.startsWith('-');
     final clean = isNegative ? trimmed.substring(1) : trimmed;
 
     final parts = clean.split('.');
-    final major = int.tryParse(parts[0]) ?? 0;
-
-    int minor = 0;
-    if (parts.length > 1) {
-      final minorStr = parts[1];
-      if (minorStr.length == 1) {
-        minor = (int.tryParse(minorStr) ?? 0) * 10;
-      } else if (minorStr.length >= 2) {
-        minor = int.tryParse(minorStr.substring(0, 2)) ?? 0;
-      }
-    }
+    final major = int.parse(parts[0]);
+    final minor = int.parse(parts[1]);
 
     final total = major * 100 + minor;
+    if (total > maxMinorUnits) {
+      throw FormatException('Money value exceeds maximum NUMERIC(12, 2) limit: "$value"');
+    }
+
     return Money(isNegative ? -total : total);
   }
 
-  /// Factory from integer major units (e.g. 1514 -> 151400 minor units).
+  /// Factory from integer major units and optional minor units without floating-point conversion.
   factory Money.fromMajor(int major, [int minor = 0]) {
-    return Money(major * 100 + minor);
+    if (minor < 0 || minor >= 100) {
+      throw ArgumentError.value(minor, 'minor', 'Minor units must be between 0 and 99');
+    }
+    final total = major * 100 + (major < 0 ? -minor : minor);
+    if (total.abs() > maxMinorUnits) {
+      throw ArgumentError('Money value exceeds maximum NUMERIC(12, 2) limit: $major.$minor');
+    }
+    return Money(total);
   }
 
-  /// Factory for num or dynamic input (converts via fixed 2-decimal string).
-  factory Money.fromNum(num val) {
-    return Money.fromDecimalString(val.toStringAsFixed(2));
-  }
+  bool get isPositive => minorUnits > 0;
+  bool get isZero => minorUnits == 0;
+  bool get isNegative => minorUnits < 0;
 
   /// Strict wire contract representation: exact 2 decimal places (e.g. "1514.00").
   String toDecimalString() {
@@ -77,7 +99,7 @@ class Money implements Comparable<Money> {
   @override
   String toString() => toDecimalString();
 
-  /// Approximate double for non-financial operations (e.g. charts).
+  /// Approximate double for non-financial operations (e.g. charts/gauges).
   double toDouble() => minorUnits / 100.0;
 
   Money operator +(Money other) => Money(minorUnits + other.minorUnits);

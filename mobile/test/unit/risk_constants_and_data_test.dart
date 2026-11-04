@@ -59,7 +59,7 @@ void main() {
     test('Transaction entity constructor rejects invalid scores with ArgumentError and accepts 0 and 100', () {
       Transaction createTx(int score) => Transaction(
             id: 'test_tx_$score',
-            amount: 500,
+            amount: Money.fromMajor(500),
             merchantName: 'Test Store',
             merchantCategory: 'Retail',
             riskScore: score,

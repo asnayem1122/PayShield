@@ -13,7 +13,7 @@ const String canonicalFixtureVersion = 'v1.0.1-canonical-remediated';
 /// - All 158 approved amounts are strictly positive (range: ৳ 1,007.00 - ৳ 2,630.00)
 /// - Row 157 (tx_app_1157) is exactly ৳ 1,514.00 (derived via 1859 - 345 surplus offset)
 List<Transaction> generateCanonicalTransactionsFixture() {
-  final now = DateTime(2026, 11, 4, 0, 0, 0);
+  final now = DateTime.utc(2026, 11, 4, 0, 0, 0);
   final list = <Transaction>[];
 
   // 1. Three High-Risk Blocked Transactions (Total: ৳ 55,000.00)

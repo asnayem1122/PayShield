@@ -184,3 +184,16 @@
 | `ip_address` | VARCHAR(45) | YES | Client IP address |
 | `idempotency_key` | VARCHAR(150) | YES | Unique idempotency token for seed/operation deduplication |
 | `created_at` | TIMESTAMPTZ | NO | Immutable record timestamp |
+
+---
+
+## 3. Alembic Migration History
+
+- **`0001_initial_schema` (`0001_initial_schema.py`)**:
+  - Creates the 5 core tables with explicit check constraints, primary keys, and foreign keys.
+  - Creates performance indexes (`ix_transactions_reference`, `ix_transactions_merchant_id`, `ix_risk_assessments_transaction_id`, `ix_analyst_cases_transaction_id`, `ix_audit_logs_entity_lookup`).
+  - Grants least-privilege table permissions to `payshield_app`.
+- **`0002_revoke_analyst_update` (`0002_revoke_assigned_analyst_update.py`)**:
+  - Reversible forward migration (`revision = "0002_revoke_analyst_update"` <= 32 chars).
+  - Upgrade: `REVOKE UPDATE (assigned_analyst) ON TABLE analyst_cases FROM payshield_app`.
+  - Downgrade: `GRANT UPDATE (assigned_analyst) ON TABLE analyst_cases TO payshield_app`.

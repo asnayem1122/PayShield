@@ -60,11 +60,25 @@ GRANT UPDATE (case_status, resolution_note, resolved_at, updated_at) ON TABLE an
 ```
 
 > **Security Note on Case Assignment Immutability:**
-> In accordance with least-privilege security specifications, `assigned_analyst` is immutable at runtime for `payshield_app`. Analysts cannot alter the assigned analyst of an existing case via standard API updates. Case ownership is assigned at creation or managed exclusively via administrative/system workflows.
+> In accordance with least-privilege security specifications, `assigned_analyst` is immutable at runtime for `payshield_app`. Analysts cannot alter the assigned analyst of an existing case via standard API updates. Case ownership is assigned at creation or managed exclusively via administrative/system workflows. This immutability is formally enforced via Alembic migration `0002_revoke_assigned_analyst_update.py` (`revision = "0002_revoke_analyst_update"`).
 
 ---
 
-## 4. Automated Verification
+## 4. Alembic Migration History & Permission Reversibility
+
+1. **`0001_initial_schema.py` (`0001_initial_schema`)**:
+   - Creates the initial five core tables (`merchants`, `transactions`, `risk_assessments`, `analyst_cases`, `audit_logs`).
+   - Applies initial least-privilege grants to `payshield_app` (SELECT on all tables, INSERT on transactions/assessments/cases/audit_logs, column-level UPDATE on transactions and analyst cases).
+   - Preserves original historical grant containing `assigned_analyst`.
+
+2. **`0002_revoke_assigned_analyst_update.py` (`0002_revoke_analyst_update`)**:
+   - Executes `REVOKE UPDATE (assigned_analyst) ON TABLE analyst_cases FROM payshield_app;` on upgrade.
+   - Executes `GRANT UPDATE (assigned_analyst) ON TABLE analyst_cases TO payshield_app;` on downgrade.
+   - Tested for full reversibility (`0001` -> `0002` -> `0001` -> `base` -> `head`) with safety guards against non-disposable databases (`backend/tests/test_migrations.py`).
+
+---
+
+## 5. Automated Verification
 
 Every rule in this specification is continuously verified by `backend/tests/test_permissions_phase2.py` across both `payshield_dev` and `payshield_test`:
 - `pg_auth_members = 0` (no role inheritance).

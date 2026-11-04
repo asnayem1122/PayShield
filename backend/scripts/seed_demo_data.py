@@ -10,11 +10,13 @@ Seeds:
 """
 
 import argparse
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 import sys
 from typing import Any
+from uuid import UUID
 from sqlalchemy import String, create_engine, delete, func, select
 from sqlalchemy.orm import Session
 
@@ -138,6 +140,17 @@ def get_canonical_transaction_specs() -> list[dict[str, Any]]:
     return specs
 
 
+def _compare_datetimes(dt1: Any, dt2: Any) -> bool:
+    """Compare two datetimes for instant equality regardless of tz representation."""
+    if dt1 is None or dt2 is None:
+        return False
+    if not isinstance(dt1, datetime) or not isinstance(dt2, datetime):
+        return False
+    u1 = dt1.astimezone(timezone.utc) if dt1.tzinfo else dt1.replace(tzinfo=timezone.utc)
+    u2 = dt2.astimezone(timezone.utc) if dt2.tzinfo else dt2.replace(tzinfo=timezone.utc)
+    return u1 == u2
+
+
 def verify_existing_canonical_seed(
     session: Session,
     merchant: Merchant,
@@ -145,12 +158,18 @@ def verify_existing_canonical_seed(
 ) -> None:
     """Perform rigorous, field-by-field verification of all 5 canonical entity layers."""
     # 1. Verify Merchant
+    if merchant.id is None or not isinstance(merchant.id, UUID):
+        raise SeedIntegrityError("Merchant ID is missing or not a valid UUID")
     if merchant.name != CANONICAL_MERCHANT_NAME:
         raise SeedIntegrityError(f"Merchant name drift: {merchant.name} != {CANONICAL_MERCHANT_NAME}")
     if merchant.category != CANONICAL_MERCHANT_CATEGORY:
         raise SeedIntegrityError(f"Merchant category drift: {merchant.category} != {CANONICAL_MERCHANT_CATEGORY}")
     if merchant.status != "ACTIVE":
         raise SeedIntegrityError(f"Merchant status drift: {merchant.status} != ACTIVE")
+    if merchant.created_at is None or not isinstance(merchant.created_at, datetime):
+        raise SeedIntegrityError("Merchant created_at is missing or invalid timestamp")
+    if merchant.updated_at is None or not isinstance(merchant.updated_at, datetime):
+        raise SeedIntegrityError("Merchant updated_at is missing or invalid timestamp")
 
     # Verify Merchant Audit Log
     merchant_log = session.execute(
@@ -158,15 +177,25 @@ def verify_existing_canonical_seed(
     ).scalar_one_or_none()
     if merchant_log is None:
         raise SeedIntegrityError("Merchant canonical audit log is missing")
+    if merchant_log.id is None or not isinstance(merchant_log.id, UUID):
+        raise SeedIntegrityError("Merchant audit log ID is missing or invalid UUID")
     if merchant_log.action != "CANONICAL_RECORD_SEEDED":
         raise SeedIntegrityError(f"Merchant audit log action drift: {merchant_log.action}")
     if merchant_log.actor_type != "SYSTEM" or merchant_log.actor_id != "canonical_seed_runner":
         raise SeedIntegrityError(f"Merchant audit log actor drift: {merchant_log.actor_type}/{merchant_log.actor_id}")
     if str(merchant_log.entity_id) != str(merchant.id):
         raise SeedIntegrityError("Merchant audit log entity linkage drift")
+    if merchant_log.entity_type != "merchant":
+        raise SeedIntegrityError(f"Merchant audit log entity_type drift: {merchant_log.entity_type}")
+    if merchant_log.ip_address is not None:
+        raise SeedIntegrityError(f"Merchant audit log ip_address unexpected: {merchant_log.ip_address}")
     expected_merchant_details = {"merchant_name": merchant.name, "category": merchant.category}
     if merchant_log.details != expected_merchant_details:
         raise SeedIntegrityError(f"Merchant audit log details drift: {merchant_log.details}")
+    if not _compare_datetimes(merchant_log.created_at, merchant.created_at):
+        raise SeedIntegrityError(
+            f"Merchant audit log created_at timestamp drift: {merchant_log.created_at} != {merchant.created_at}"
+        )
 
     # 2. Verify Transactions (All 175)
     txs = session.execute(
@@ -180,6 +209,8 @@ def verify_existing_canonical_seed(
         if ref not in tx_map:
             raise SeedIntegrityError(f"Missing canonical transaction {ref}")
         tx = tx_map[ref]
+        if tx.id is None or not isinstance(tx.id, UUID):
+            raise SeedIntegrityError(f"Transaction {ref} ID is missing or invalid UUID")
         if tx.merchant_id != merchant.id:
             raise SeedIntegrityError(f"Transaction {ref} merchant linkage drift")
         if tx.counterparty_name != expected["counterparty_name"]:
@@ -204,6 +235,10 @@ def verify_existing_canonical_seed(
             raise SeedIntegrityError(f"Transaction {ref} action drift: {tx.recommended_action} != {expected['recommended_action']}")
         if tx.channel != expected["channel"]:
             raise SeedIntegrityError(f"Transaction {ref} channel drift: {tx.channel} != {expected['channel']}")
+        if not _compare_datetimes(tx.created_at, expected["created_at"]):
+            raise SeedIntegrityError(f"Transaction {ref} created_at timestamp drift: {tx.created_at} != {expected['created_at']}")
+        if not _compare_datetimes(tx.updated_at, expected["created_at"]):
+            raise SeedIntegrityError(f"Transaction {ref} updated_at timestamp drift: {tx.updated_at} != {expected['created_at']}")
 
     # 3. Verify Risk Assessments (All 175)
     assessments = session.execute(
@@ -220,6 +255,10 @@ def verify_existing_canonical_seed(
         if tx.id not in ra_by_tx_id:
             raise SeedIntegrityError(f"Missing risk assessment for transaction {ref}")
         ra = ra_by_tx_id[tx.id]
+        if ra.id is None or not isinstance(ra.id, UUID):
+            raise SeedIntegrityError(f"Assessment for {ref} ID is missing or invalid UUID")
+        if ra.transaction_id != tx.id:
+            raise SeedIntegrityError(f"Assessment for {ref} transaction_id linkage drift")
         if ra.scoring_method != "CANONICAL_SEED":
             raise SeedIntegrityError(f"Assessment for {ref} scoring_method drift: {ra.scoring_method}")
         if ra.policy_version != "1.0.0":
@@ -236,6 +275,8 @@ def verify_existing_canonical_seed(
             raise SeedIntegrityError(f"Assessment for {ref} risk_factors drift: {ra.risk_factors} != {expected['risk_factors']}")
         if ra.feature_contributions != []:
             raise SeedIntegrityError(f"Assessment for {ref} non-empty feature_contributions")
+        if not _compare_datetimes(ra.created_at, expected["created_at"]):
+            raise SeedIntegrityError(f"Assessment for {ref} created_at timestamp drift: {ra.created_at} != {expected['created_at']}")
 
     # 4. Verify Analyst Cases (All 14)
     cases = session.execute(
@@ -253,6 +294,10 @@ def verify_existing_canonical_seed(
             if tx.id not in cases_by_tx_id:
                 raise SeedIntegrityError(f"Missing analyst case for review transaction {ref}")
             c = cases_by_tx_id[tx.id]
+            if c.id is None or not isinstance(c.id, UUID):
+                raise SeedIntegrityError(f"Case for {ref} ID is missing or invalid UUID")
+            if c.transaction_id != tx.id:
+                raise SeedIntegrityError(f"Case for {ref} transaction_id linkage drift")
             if c.case_status != "OPEN":
                 raise SeedIntegrityError(f"Case for {ref} status drift: {c.case_status} != OPEN")
             if c.priority != "MEDIUM":
@@ -265,6 +310,10 @@ def verify_existing_canonical_seed(
                 raise SeedIntegrityError(f"Case for {ref} resolution_note is not None: {c.resolution_note}")
             if c.resolved_at is not None:
                 raise SeedIntegrityError(f"Case for {ref} resolved_at is not None: {c.resolved_at}")
+            if not _compare_datetimes(c.created_at, expected["created_at"]):
+                raise SeedIntegrityError(f"Case for {ref} created_at timestamp drift: {c.created_at} != {expected['created_at']}")
+            if not _compare_datetimes(c.updated_at, expected["created_at"]):
+                raise SeedIntegrityError(f"Case for {ref} updated_at timestamp drift: {c.updated_at} != {expected['created_at']}")
 
     # 5. Verify Audit Logs (All 176)
     canonical_logs = session.execute(
@@ -280,6 +329,8 @@ def verify_existing_canonical_seed(
             raise SeedIntegrityError(f"Missing audit log for transaction {ref}")
         l = logs_by_key[expected_key]
         tx = tx_map[ref]
+        if l.id is None or not isinstance(l.id, UUID):
+            raise SeedIntegrityError(f"Audit log {expected_key} ID is missing or invalid UUID")
         if str(l.entity_id) != str(tx.id):
             raise SeedIntegrityError(f"Audit log {expected_key} entity_id linkage drift")
         if l.entity_type != "transaction":
@@ -288,6 +339,8 @@ def verify_existing_canonical_seed(
             raise SeedIntegrityError(f"Audit log {expected_key} action drift: {l.action}")
         if l.actor_type != "SYSTEM" or l.actor_id != "canonical_seed_runner":
             raise SeedIntegrityError(f"Audit log {expected_key} actor drift: {l.actor_type}/{l.actor_id}")
+        if l.ip_address is not None:
+            raise SeedIntegrityError(f"Audit log {expected_key} ip_address unexpected: {l.ip_address}")
         expected_details = {
             "reference": tx.reference,
             "amount": str(tx.amount),
@@ -296,11 +349,42 @@ def verify_existing_canonical_seed(
         }
         if l.details != expected_details:
             raise SeedIntegrityError(f"Audit log {expected_key} details drift: {l.details} != {expected_details}")
+        if not _compare_datetimes(l.created_at, expected["created_at"]):
+            raise SeedIntegrityError(f"Audit log {expected_key} created_at timestamp drift: {l.created_at} != {expected['created_at']}")
 
 
 def assert_safe_recovery_boundary(session: Session) -> None:
     """Verify that canonical seed records have no external runtime dependencies before deletion."""
-    # Check 1: Runtime audit logs referencing canonical transactions
+    canonical_tx_subquery = select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+
+    # Check 1: Runtime-generated risk assessments attached to canonical transactions
+    assessments = session.execute(
+        select(RiskAssessment).where(RiskAssessment.transaction_id.in_(canonical_tx_subquery))
+    ).scalars().all()
+
+    ra_by_tx: dict[Any, list[RiskAssessment]] = defaultdict(list)
+    for ra in assessments:
+        ra_by_tx[ra.transaction_id].append(ra)
+
+    for tx_id, ra_list in ra_by_tx.items():
+        if len(ra_list) > 1:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Transaction {tx_id} has {len(ra_list)} risk assessments. "
+                "Refusing to delete records with unexpected multiple assessments."
+            )
+        ra = ra_list[0]
+        if ra.scoring_method != "CANONICAL_SEED":
+            raise SeedIntegrityError(
+                f"Recovery aborted: Runtime-generated risk assessment detected (scoring_method={ra.scoring_method}). "
+                "Refusing to delete records with external runtime assessment dependencies."
+            )
+        if ra.policy_version != "1.0.0" or ra.feature_contributions != [] or ra.base_score is not None:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Assessment has runtime metadata (policy={ra.policy_version}, contributions={ra.feature_contributions}). "
+                "Refusing to delete records with runtime modifications."
+            )
+
+    # Check 2: Runtime audit logs referencing canonical transactions
     runtime_audit_deps = session.execute(
         select(AuditLog).where(
             AuditLog.entity_type == "transaction",
@@ -316,12 +400,25 @@ def assert_safe_recovery_boundary(session: Session) -> None:
             "Refusing to delete records with external runtime dependencies."
         )
 
-    # Check 2: Active or modified human workflow cases
+    # Check 3: Runtime audit logs referencing canonical merchant
+    merchant_subquery = select(func.cast(Merchant.id, String)).where(Merchant.name == CANONICAL_MERCHANT_NAME)
+    runtime_merchant_audits = session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_type == "merchant",
+            AuditLog.entity_id.in_(merchant_subquery),
+            AuditLog.idempotency_key != CANONICAL_MERCHANT_AUDIT_KEY,
+        )
+    ).scalars().all()
+    if runtime_merchant_audits:
+        raise SeedIntegrityError(
+            f"Recovery aborted: {len(runtime_merchant_audits)} runtime audit logs reference canonical merchant. "
+            "Refusing to delete records with external runtime dependencies."
+        )
+
+    # Check 4: Active or modified human workflow cases
     modified_cases = session.execute(
         select(AnalystCase).where(
-            AnalystCase.transaction_id.in_(
-                select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
-            ),
+            AnalystCase.transaction_id.in_(canonical_tx_subquery),
             (AnalystCase.case_status != "OPEN")
             | (AnalystCase.assigned_analyst.is_not(None))
             | (AnalystCase.resolution_note.is_not(None))
@@ -334,182 +431,206 @@ def assert_safe_recovery_boundary(session: Session) -> None:
             "Refusing to delete records with active analyst modifications."
         )
 
+    # Check 5: Unexpected analyst cases attached to non-REVIEW transactions
+    non_review_cases = session.execute(
+        select(AnalystCase).where(
+            AnalystCase.transaction_id.in_(
+                select(Transaction.id).where(
+                    Transaction.reference.in_(CANONICAL_REFERENCES),
+                    Transaction.transaction_status != "REVIEW",
+                )
+            )
+        )
+    ).scalars().all()
+    if non_review_cases:
+        raise SeedIntegrityError(
+            f"Recovery aborted: {len(non_review_cases)} unexpected analyst cases attached to non-REVIEW transactions."
+        )
+
 
 def seed_canonical_data(
     session: Session,
     recover_partial: bool = False,
 ) -> dict[str, Any]:
     """Execute transactional exact-match verified seeding with safe partial recovery."""
-    specs = get_canonical_transaction_specs()
-    spec_map = {s["reference"]: s for s in specs}
+    try:
+        specs = get_canonical_transaction_specs()
+        spec_map = {s["reference"]: s for s in specs}
 
-    merchant = session.execute(
-        select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)
-    ).scalar_one_or_none()
+        merchant = session.execute(
+            select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)
+        ).scalar_one_or_none()
 
-    existing_txs = session.execute(
-        select(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
-    ).scalars().all()
-    existing_count = len(existing_txs)
+        existing_txs = session.execute(
+            select(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+        ).scalars().all()
+        existing_count = len(existing_txs)
 
-    # Clean slate (count == 0 and merchant is None or unseeded)
-    if existing_count == 0 and merchant is None:
-        print("Clean slate database detected. Inserting canonical dataset...")
-    elif existing_count == 175 and merchant is not None:
-        if not recover_partial:
-            print("Existing 175 canonical transactions detected. Verifying all fields...")
-            verify_existing_canonical_seed(session, merchant, spec_map)
-            print("100% exact match verified across all 5 canonical entity sets. Database intact.")
-            return {"status": "VERIFIED_EXISTING", "count": 175}
-        print("Existing 175 canonical transactions detected. Safe recovery/re-seed explicitly requested...")
-    else:
-        # Partial transaction count (0 < count < 175) or incomplete merchant state
-        if not recover_partial:
-            raise PartialSeedAbortedError(
-                f"Detected incomplete canonical seed state ({existing_count}/175 transactions). "
-                "Re-run with --recover-partial to safely remove canonical seed records and reseed."
+        # Clean slate (count == 0 and merchant is None or unseeded)
+        if existing_count == 0 and merchant is None:
+            print("Clean slate database detected. Inserting canonical dataset...")
+        elif existing_count == 175 and merchant is not None:
+            if not recover_partial:
+                print("Existing 175 canonical transactions detected. Verifying all fields...")
+                verify_existing_canonical_seed(session, merchant, spec_map)
+                print("100% exact match verified across all 5 canonical entity sets. Database intact.")
+                return {"status": "VERIFIED_EXISTING", "count": 175}
+            print("Existing 175 canonical transactions detected. Safe recovery/re-seed explicitly requested...")
+        else:
+            # Partial transaction count (0 < count < 175) or incomplete merchant state
+            if not recover_partial:
+                raise PartialSeedAbortedError(
+                    f"Detected incomplete canonical seed state ({existing_count}/175 transactions). "
+                    "Re-run with --recover-partial to safely remove canonical seed records and reseed."
+                )
+            print(f"Partial canonical seed state detected ({existing_count}/175). Initiating recovery...")
+
+        # Execute Safe Recovery if required
+        if recover_partial or existing_count > 0 or merchant is not None:
+            print("Checking safety boundary for canonical records...")
+            assert_safe_recovery_boundary(session)
+
+            print("Deleting explicitly enumerated seed-owned records...")
+            # 1. Delete seed-owned audit logs (explicit keys only)
+            session.execute(
+                delete(AuditLog).where(AuditLog.idempotency_key.in_(EXACT_AUDIT_KEYS))
             )
-        print(f"Partial canonical seed state detected ({existing_count}/175). Initiating recovery...")
-
-    # Execute Safe Recovery if required
-    if recover_partial or existing_count > 0 or merchant is not None:
-        print("Checking safety boundary for canonical records...")
-        assert_safe_recovery_boundary(session)
-
-        print("Deleting explicitly enumerated seed-owned records...")
-        # 1. Delete seed-owned audit logs (explicit keys only)
-        session.execute(
-            delete(AuditLog).where(AuditLog.idempotency_key.in_(EXACT_AUDIT_KEYS))
-        )
-        # 2. Delete seed-owned analyst cases
-        session.execute(
-            delete(AnalystCase).where(
-                AnalystCase.transaction_id.in_(
-                    select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+            # 2. Delete seed-owned analyst cases
+            session.execute(
+                delete(AnalystCase).where(
+                    AnalystCase.transaction_id.in_(
+                        select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+                    )
                 )
             )
-        )
-        # 3. Delete seed-owned risk assessments
-        session.execute(
-            delete(RiskAssessment).where(
-                RiskAssessment.transaction_id.in_(
-                    select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+            # 3. Delete seed-owned risk assessments
+            session.execute(
+                delete(RiskAssessment).where(
+                    RiskAssessment.transaction_id.in_(
+                        select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+                    )
                 )
             )
-        )
-        # 4. Delete canonical transactions
-        session.execute(
-            delete(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
-        )
-        session.flush()
-        print("Safe deletion of canonical records complete.")
-
-    # Reseed Merchant
-    if merchant is None:
-        merchant = Merchant(
-            name=CANONICAL_MERCHANT_NAME,
-            category=CANONICAL_MERCHANT_CATEGORY,
-            status="ACTIVE",
-        )
-        session.add(merchant)
-        session.flush()
-
-    # Ensure Merchant Audit Log always exists (even when merchant row pre-existed)
-    merchant_audit = session.execute(
-        select(AuditLog).where(AuditLog.idempotency_key == CANONICAL_MERCHANT_AUDIT_KEY)
-    ).scalar_one_or_none()
-    if merchant_audit is None:
-        session.add(
-            AuditLog(
-                actor_type="SYSTEM",
-                actor_id="canonical_seed_runner",
-                action="CANONICAL_RECORD_SEEDED",
-                entity_type="merchant",
-                entity_id=merchant.id,
-                idempotency_key=CANONICAL_MERCHANT_AUDIT_KEY,
-                details={"merchant_name": merchant.name, "category": merchant.category},
+            # 4. Delete canonical transactions
+            session.execute(
+                delete(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
             )
-        )
-        session.flush()
+            session.flush()
+            print("Safe deletion of canonical records complete.")
 
-    # Reseed 175 Transactions, Assessments, Cases, and Audit Logs
-    print("Inserting 175 canonical transactions, assessments, cases, and audit logs...")
-    for spec in specs:
-        tx = Transaction(
-            reference=spec["reference"],
-            merchant_id=merchant.id,
-            counterparty_name=spec["counterparty_name"],
-            amount=spec["amount"],
-            currency=spec["currency"],
-            transaction_status=spec["transaction_status"],
-            device_model=spec["device_model"],
-            location_city=spec["location_city"],
-            is_location_anomaly=spec["is_location_anomaly"],
-            risk_score=spec["risk_score"],
-            risk_level=spec["risk_level"],
-            recommended_action=spec["recommended_action"],
-            channel=spec["channel"],
-            created_at=spec["created_at"],
-            updated_at=spec["created_at"],
-        )
-        session.add(tx)
-        session.flush()
+        # Reseed Merchant
+        if merchant is None:
+            merchant = Merchant(
+                name=CANONICAL_MERCHANT_NAME,
+                category=CANONICAL_MERCHANT_CATEGORY,
+                status="ACTIVE",
+                created_at=datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc),
+            )
+            session.add(merchant)
+            session.flush()
 
-        # Risk assessment
-        ra = RiskAssessment(
-            transaction_id=tx.id,
-            base_score=None,
-            raw_score=None,
-            risk_score=tx.risk_score,
-            is_score_clamped=None,
-            risk_level=tx.risk_level,
-            recommended_action=tx.recommended_action,
-            scoring_method="CANONICAL_SEED",
-            policy_version="1.0.0",
-            risk_factors=spec["risk_factors"],
-            feature_contributions=[],
-            created_at=tx.created_at,
-        )
-        session.add(ra)
+        # Ensure Merchant Audit Log always exists (even when merchant row pre-existed)
+        merchant_audit = session.execute(
+            select(AuditLog).where(AuditLog.idempotency_key == CANONICAL_MERCHANT_AUDIT_KEY)
+        ).scalar_one_or_none()
+        if merchant_audit is None:
+            session.add(
+                AuditLog(
+                    actor_type="SYSTEM",
+                    actor_id="canonical_seed_runner",
+                    action="CANONICAL_RECORD_SEEDED",
+                    entity_type="merchant",
+                    entity_id=merchant.id,
+                    idempotency_key=CANONICAL_MERCHANT_AUDIT_KEY,
+                    details={"merchant_name": merchant.name, "category": merchant.category},
+                    created_at=merchant.created_at,
+                )
+            )
+            session.flush()
 
-        # Analyst case if REVIEW transaction
-        if spec["transaction_status"] == "REVIEW":
-            case = AnalystCase(
+        # Reseed 175 Transactions, Assessments, Cases, and Audit Logs
+        print("Inserting 175 canonical transactions, assessments, cases, and audit logs...")
+        for spec in specs:
+            tx = Transaction(
+                reference=spec["reference"],
+                merchant_id=merchant.id,
+                counterparty_name=spec["counterparty_name"],
+                amount=spec["amount"],
+                currency=spec["currency"],
+                transaction_status=spec["transaction_status"],
+                device_model=spec["device_model"],
+                location_city=spec["location_city"],
+                is_location_anomaly=spec["is_location_anomaly"],
+                risk_score=spec["risk_score"],
+                risk_level=spec["risk_level"],
+                recommended_action=spec["recommended_action"],
+                channel=spec["channel"],
+                created_at=spec["created_at"],
+                updated_at=spec["created_at"],
+            )
+            session.add(tx)
+            session.flush()
+
+            # Risk assessment
+            ra = RiskAssessment(
                 transaction_id=tx.id,
-                case_status="OPEN",
-                priority="MEDIUM",
-                trigger_reason=spec["trigger_reason"],
-                created_at=tx.created_at,
-                updated_at=tx.created_at,
-            )
-            session.add(case)
-
-        # Audit log for transaction
-        session.add(
-            AuditLog(
-                actor_type="SYSTEM",
-                actor_id="canonical_seed_runner",
-                action="CANONICAL_RECORD_SEEDED",
-                entity_type="transaction",
-                entity_id=tx.id,
-                idempotency_key=f"canonical_seeded:tx:{tx.reference}",
-                details={
-                    "reference": tx.reference,
-                    "amount": str(tx.amount),
-                    "status": tx.transaction_status,
-                    "score": tx.risk_score,
-                },
+                base_score=None,
+                raw_score=None,
+                risk_score=tx.risk_score,
+                is_score_clamped=None,
+                risk_level=tx.risk_level,
+                recommended_action=tx.recommended_action,
+                scoring_method="CANONICAL_SEED",
+                policy_version="1.0.0",
+                risk_factors=spec["risk_factors"],
+                feature_contributions=[],
                 created_at=tx.created_at,
             )
-        )
+            session.add(ra)
 
-    session.flush()
+            # Analyst case if REVIEW transaction
+            if spec["transaction_status"] == "REVIEW":
+                case = AnalystCase(
+                    transaction_id=tx.id,
+                    case_status="OPEN",
+                    priority="MEDIUM",
+                    trigger_reason=spec["trigger_reason"],
+                    created_at=tx.created_at,
+                    updated_at=tx.created_at,
+                )
+                session.add(case)
 
-    # Final Exact-Match Verification of the newly seeded dataset
-    verify_existing_canonical_seed(session, merchant, spec_map)
-    session.commit()
-    print("100% exact match verified across all 5 canonical entity sets. Database intact.")
-    return {"status": "SUCCESS_SEEDED", "count": 175}
+            # Audit log for transaction
+            session.add(
+                AuditLog(
+                    actor_type="SYSTEM",
+                    actor_id="canonical_seed_runner",
+                    action="CANONICAL_RECORD_SEEDED",
+                    entity_type="transaction",
+                    entity_id=tx.id,
+                    idempotency_key=f"canonical_seeded:tx:{tx.reference}",
+                    details={
+                        "reference": tx.reference,
+                        "amount": str(tx.amount),
+                        "status": tx.transaction_status,
+                        "score": tx.risk_score,
+                    },
+                    created_at=tx.created_at,
+                )
+            )
+
+        session.flush()
+
+        # Final Exact-Match Verification of the newly seeded dataset
+        verify_existing_canonical_seed(session, merchant, spec_map)
+        session.commit()
+        print("100% exact match verified across all 5 canonical entity sets. Database intact.")
+        return {"status": "SUCCESS_SEEDED", "count": 175}
+
+    except Exception:
+        session.rollback()
+        raise
 
 
 def main():
@@ -519,10 +640,29 @@ def main():
         action="store_true",
         help="Safely remove partially seeded canonical records and re-seed clean dataset.",
     )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Strict field-by-field verification of existing database records without modification.",
+    )
     args = parser.parse_args()
 
     url = settings.get_migration_sqlalchemy_url().set(database="payshield_dev")
     engine = create_engine(url)
+
+    if args.verify_only:
+        print("Connecting as payshield_migrator to verify canonical demo dataset...")
+        with Session(engine) as session:
+            merchant = session.execute(
+                select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)
+            ).scalar_one_or_none()
+            if merchant is None:
+                raise SeedIntegrityError("Canonical merchant 'PayShield Demo Merchant' not found in database.")
+            specs = get_canonical_transaction_specs()
+            spec_map = {s["reference"]: s for s in specs}
+            verify_existing_canonical_seed(session, merchant, spec_map)
+            print("100% exact match verified across all 5 canonical entity sets. Database intact.")
+            return
 
     print("Connecting as payshield_migrator to payshield_dev on 127.0.0.1...")
     with Session(engine) as session:

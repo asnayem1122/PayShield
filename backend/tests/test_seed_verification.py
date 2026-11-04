@@ -1,5 +1,6 @@
-"""Automated test suite for canonical seed verification, exact-match checking, and recovery."""
+"""Automated test suite for canonical seed verification, exact-match checking, and drift detection."""
 
+from datetime import timedelta
 from decimal import Decimal
 import pytest
 from sqlalchemy import create_engine, select
@@ -11,9 +12,10 @@ from scripts.seed_demo_data import (
     CANONICAL_REFERENCES,
     CANONICAL_MERCHANT_NAME,
     EXACT_AUDIT_KEYS,
-    PartialSeedAbortedError,
     SeedIntegrityError,
     seed_canonical_data,
+    verify_existing_canonical_seed,
+    get_canonical_transaction_specs,
 )
 
 
@@ -118,3 +120,173 @@ def test_idempotent_rerun_preserves_exact_match(dev_db_session: Session) -> None
     result = seed_canonical_data(dev_db_session, recover_partial=False)
     assert result["status"] == "VERIFIED_EXISTING"
     assert result["count"] == 175
+
+
+# -----------------------------------------------------------------------------
+# Drift Detection Tests (Section 4)
+# -----------------------------------------------------------------------------
+
+
+def _get_spec_map():
+    specs = get_canonical_transaction_specs()
+    return {s["reference"]: s for s in specs}
+
+
+def test_drift_transaction_created_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in transaction created_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    tx = dev_db_session.execute(select(Transaction).where(Transaction.reference == "tx_app_1001")).scalar_one()
+    orig = tx.created_at
+    try:
+        tx.created_at = orig - timedelta(hours=2)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "created_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_transaction_updated_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in transaction updated_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    tx = dev_db_session.execute(select(Transaction).where(Transaction.reference == "tx_app_1001")).scalar_one()
+    orig = tx.updated_at
+    try:
+        tx.updated_at = orig + timedelta(minutes=10)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "updated_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_risk_assessment_created_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in risk assessment created_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    tx = dev_db_session.execute(select(Transaction).where(Transaction.reference == "tx_app_1001")).scalar_one()
+    ra = dev_db_session.execute(select(RiskAssessment).where(RiskAssessment.transaction_id == tx.id)).scalar_one()
+    orig = ra.created_at
+    try:
+        ra.created_at = orig - timedelta(days=1)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "created_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_analyst_case_created_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in canonical analyst case created_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    case = dev_db_session.execute(
+        select(AnalystCase).join(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+    ).scalars().first()
+    assert case is not None
+    orig = case.created_at
+    try:
+        case.created_at = orig - timedelta(minutes=45)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "created_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_audit_log_created_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in audit log created_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    audit_log = dev_db_session.execute(
+        select(AuditLog).where(AuditLog.idempotency_key == "canonical_seeded:tx:tx_app_1001")
+    ).scalar_one()
+    orig = audit_log.created_at
+    try:
+        audit_log.created_at = orig - timedelta(minutes=15)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "created_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_merchant_name(dev_db_session: Session) -> None:
+    """Exact-match verification detects changed merchant name."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    orig = merchant.name
+    try:
+        merchant.name = "Altered Merchant Name"
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "Merchant name drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_transaction_amount(dev_db_session: Session) -> None:
+    """Exact-match verification detects changed transaction amount."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    tx = dev_db_session.execute(select(Transaction).where(Transaction.reference == "tx_app_1001")).scalar_one()
+    orig = tx.amount
+    try:
+        tx.amount = Decimal("9999.00")
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "amount drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_risk_metadata_score(dev_db_session: Session) -> None:
+    """Exact-match verification detects changed risk metadata score within allowed CHECK range."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    tx = dev_db_session.execute(select(Transaction).where(Transaction.reference == "tx_app_1001")).scalar_one()
+    ra = dev_db_session.execute(select(RiskAssessment).where(RiskAssessment.transaction_id == tx.id)).scalar_one()
+    orig = ra.risk_score
+    try:
+        ra.risk_score = 30  # Still LOW (0-39) to satisfy check constraint, but drifts from canonical 9
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "risk_score drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_analyst_case_trigger_reason(dev_db_session: Session) -> None:
+    """Exact-match verification detects changed analyst case trigger reason."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    case = dev_db_session.execute(
+        select(AnalystCase).join(Transaction).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+    ).scalars().first()
+    orig = case.trigger_reason
+    try:
+        case.trigger_reason = "NEW_ACCOUNT"  # Valid in CHECK constraint, but drifts from canonical reason
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "trigger_reason drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_audit_log_details(dev_db_session: Session) -> None:
+    """Exact-match verification detects tampered audit log details."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    audit_log = dev_db_session.execute(
+        select(AuditLog).where(AuditLog.idempotency_key == "canonical_seeded:tx:tx_app_1001")
+    ).scalar_one()
+    orig = audit_log.details
+    try:
+        audit_log.details = {"reference": "tx_app_1001", "amount": "99999.00", "status": "APPROVED", "score": 25}
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "details drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()

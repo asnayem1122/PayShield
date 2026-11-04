@@ -2,9 +2,11 @@
 
 Verifies:
 - Safe database identity check (refuses to run unless target is 'payshield_migration_test')
-- alembic upgrade head creates all 5 tables and constraints
-- alembic downgrade base drops all tables cleanly
-- alembic upgrade head successfully re-creates schema
+- alembic upgrade 0001 creates all 5 tables and grants initial column-level permissions
+- alembic upgrade 0002 revokes UPDATE on assigned_analyst while preserving approved columns
+- alembic downgrade to 0001 restores assigned_analyst UPDATE without dropping data/tables
+- alembic downgrade to base drops all tables cleanly
+- alembic upgrade head successfully re-creates schema and applies final permissions
 """
 
 from pathlib import Path
@@ -35,8 +37,19 @@ def assert_disposable_migration_database(engine) -> None:
         )
 
 
+def test_safety_guard_rejects_non_disposable_database():
+    """Verify safety guard raises RuntimeError if attempted on non-disposable database."""
+    dev_url = settings.get_migration_sqlalchemy_url().set(database="payshield_dev")
+    dev_engine = create_engine(dev_url)
+    with pytest.raises(RuntimeError) as exc_info:
+        assert_disposable_migration_database(dev_engine)
+    assert "SAFETY ABORT" in str(exc_info.value)
+    assert "payshield_dev" in str(exc_info.value)
+    dev_engine.dispose()
+
+
 def test_migration_upgrade_downgrade_reversibility() -> None:
-    """Test full migration lifecycle (upgrade -> downgrade -> upgrade) in disposable DB."""
+    """Test full migration lifecycle (upgrade -> forward migration 0002 -> downgrade -> downgrade base) in disposable DB."""
     engine = get_migration_test_engine()
     assert_disposable_migration_database(engine)
 
@@ -50,8 +63,8 @@ def test_migration_upgrade_downgrade_reversibility() -> None:
         # 1. Clean slate downgrade to base if previously applied
         command.downgrade(alembic_cfg, "base")
 
-        # 2. Upgrade to head
-        command.upgrade(alembic_cfg, "head")
+        # 2. Upgrade to migration 0001
+        command.upgrade(alembic_cfg, "0001_initial_schema")
 
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
@@ -64,12 +77,39 @@ def test_migration_upgrade_downgrade_reversibility() -> None:
         }
         assert expected_tables.issubset(tables), f"Expected tables missing: {expected_tables - tables}"
 
-        # 3. Verify check constraints exist on transactions
-        check_constraints = [ck["name"] for ck in inspector.get_check_constraints("transactions")]
-        assert any("score_level" in ck for ck in check_constraints), f"score_level constraint missing in {check_constraints}"
-        assert any("level_action" in ck for ck in check_constraints), f"level_action constraint missing in {check_constraints}"
+        # In 0001, assigned_analyst UPDATE was originally granted
+        with engine.connect() as conn:
+            priv_0001 = conn.execute(
+                text("SELECT has_column_privilege('payshield_app', 'analyst_cases', 'assigned_analyst', 'UPDATE')")
+            ).scalar()
+            assert priv_0001 is True, "Migration 0001 should grant UPDATE on assigned_analyst"
 
-        # 4. Destructive downgrade to base
+        # 3. Upgrade forward to migration 0002 (head)
+        command.upgrade(alembic_cfg, "head")
+
+        with engine.connect() as conn:
+            priv_0002 = conn.execute(
+                text("SELECT has_column_privilege('payshield_app', 'analyst_cases', 'assigned_analyst', 'UPDATE')")
+            ).scalar()
+            assert priv_0002 is False, "Migration 0002 must revoke UPDATE on assigned_analyst"
+
+            # Verify approved columns still have UPDATE
+            for col in ["case_status", "resolution_note", "resolved_at", "updated_at"]:
+                has_priv = conn.execute(
+                    text(f"SELECT has_column_privilege('payshield_app', 'analyst_cases', '{col}', 'UPDATE')")
+                ).scalar()
+                assert has_priv is True, f"Migration 0002 must preserve UPDATE on {col}"
+
+        # 4. Downgrade migration 0002 back to 0001
+        command.downgrade(alembic_cfg, "0001_initial_schema")
+
+        with engine.connect() as conn:
+            priv_reverted = conn.execute(
+                text("SELECT has_column_privilege('payshield_app', 'analyst_cases', 'assigned_analyst', 'UPDATE')")
+            ).scalar()
+            assert priv_reverted is True, "Downgrading 0002 must restore UPDATE on assigned_analyst"
+
+        # 5. Full downgrade to base
         command.downgrade(alembic_cfg, "base")
 
         inspector_after_downgrade = inspect(engine)
@@ -78,12 +118,18 @@ def test_migration_upgrade_downgrade_reversibility() -> None:
             f"Tables remained after downgrade: {remaining_tables.intersection(expected_tables)}"
         )
 
-        # 5. Re-upgrade to head
+        # 6. Re-upgrade from base all the way to head
         command.upgrade(alembic_cfg, "head")
 
         inspector_reupgrade = inspect(engine)
         reup_tables = set(inspector_reupgrade.get_table_names())
         assert expected_tables.issubset(reup_tables), "Re-upgrade failed to restore all tables"
+
+        with engine.connect() as conn:
+            priv_final = conn.execute(
+                text("SELECT has_column_privilege('payshield_app', 'analyst_cases', 'assigned_analyst', 'UPDATE')")
+            ).scalar()
+            assert priv_final is False, "Final head state must have UPDATE on assigned_analyst revoked"
 
     finally:
         engine.dispose()

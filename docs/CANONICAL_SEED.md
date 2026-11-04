@@ -55,7 +55,7 @@ $$\text{Amount}_{157} = 1,859.00 - 345.00 = \mathbf{1,514.00 \text{ BDT}}$$
 ## 3. Multi-Entity Seed Composition
 
 Seeding `payshield_dev` inserts all 5 interrelated entity layers in a single transactional unit:
-1. **1 Merchant**: "Shadhin Pay" (Category: Retail, Status: ACTIVE).
+1. **1 Merchant**: "PayShield Demo Merchant" (Category: Retail, Status: ACTIVE).
 2. **175 Transactions**: 158 Approved, 14 Review, 3 Blocked.
 3. **175 Risk Assessments**: scoring_method `CANONICAL_SEED`, policy_version `1.0.0`.
 4. **14 Analyst Cases**: 1:1 linked to the 14 review transactions, status `OPEN`, priority `MEDIUM`.
@@ -70,12 +70,18 @@ Seeding `payshield_dev` inserts all 5 interrelated entity layers in a single tra
 python -m scripts.seed_demo_data
 ```
 
+### Read-Only Verification Mode:
+```bash
+python -m scripts.seed_demo_data --verify-only
+```
+Verifies 100% exact match across all fields (including exact UTC timestamps and UUIDs) without making any insertions or database mutations. Exits with exit code 0 on success, or raises `SeedIntegrityError` if drift is detected.
+
 ### Idempotent Field-by-Field Verification:
 Rerunning `seed_demo_data.py` on an already-seeded database runs a comprehensive exact-match comparison across all fields of all 5 entity sets (Merchant, 175 Transactions, 175 Risk Assessments, 14 Analyst Cases, 176 Audit Logs) and exits without any modifications:
 ```
 100% exact match verified across all 5 canonical entity sets. Database intact.
 ```
-If any drift or unexpected modification is detected (e.g. altered amount, score, status, or missing related records), the script aborts with `SeedIntegrityError`.
+If any drift or unexpected modification is detected (e.g. altered amount, score, status, timestamp, or missing related records), the script aborts with `SeedIntegrityError`.
 
 ### Safe Partial Recovery Protocol:
 If an interrupted or partial seed state is detected ($0 < \text{count} < 175$), or when explicit recovery is requested:
@@ -84,9 +90,11 @@ python -m scripts.seed_demo_data --recover-partial
 ```
 
 #### Safe Recovery Boundary & Invariants:
-1. **Safety Boundary Checks**:
-   - Refuses deletion and rolls back if any non-seed runtime audit logs reference canonical transactions (`AuditLog.idempotency_key NOT IN EXACT_AUDIT_KEYS`).
-   - Refuses deletion and rolls back if any analyst cases have active human workflow modifications (`case_status != 'OPEN'`, or non-null `assigned_analyst`, `resolution_note`, or `resolved_at`).
+1. **Safety Boundary Checks (P1 Invariant)**:
+   - **Runtime Risk Assessments**: Refuses deletion and aborts with atomic rollback if any canonical transaction has multiple risk assessments, or any assessment with `scoring_method != 'CANONICAL_SEED'`. Runtime assessments produced by dynamic scoring engines must never be deleted by seed recovery.
+   - **Runtime Transaction Audit Logs**: Refuses deletion and rolls back if any non-seed runtime audit logs reference canonical transactions (`AuditLog.idempotency_key NOT IN EXACT_AUDIT_KEYS`).
+   - **Runtime Merchant Audit Logs**: Refuses deletion and rolls back if any non-seed runtime audit logs reference the canonical merchant.
+   - **Active Human Workflow Activity**: Refuses deletion and rolls back if any analyst cases have active human workflow modifications (`case_status != 'OPEN'`, or non-null `assigned_analyst`, `resolution_note`, or `resolved_at`).
 2. **Explicit Key Deletions**:
    - Deletions are strictly bounded to enumerated canonical primary keys (`CANONICAL_REFERENCES`) and exact audit keys (`EXACT_AUDIT_KEYS`).
    - Wildcard deletions (e.g. `LIKE 'canonical_seeded:%'`) are strictly prohibited.
@@ -97,9 +105,14 @@ python -m scripts.seed_demo_data --recover-partial
    - Deletion, re-insertion, and final field-by-field verification execute within a single atomic database transaction. If any validation fails, the entire recovery transaction is rolled back.
 
 ### Automated Recovery Test Suite:
-Continuous verification of recovery and idempotency is provided in `backend/tests/test_seed_recovery.py`:
+Continuous verification of recovery and idempotency is provided in `backend/tests/test_seed_recovery.py` across 10 distinct scenarios:
 - **Scenario 1 (Empty State)**: Clean database seeds to 175 tx, 175 assessments, 14 cases, 176 audit logs.
 - **Scenario 2 (Fully Seeded State)**: Idempotent run with `recover_partial=False` detects 175 records, verifies all 5 entity sets, and returns `VERIFIED_EXISTING` without mutation.
-- **Scenario 3 (Partial State)**: Interrupted dataset fails standard run with `PartialSeedAbortedError` and recovers cleanly with `--recover-partial`.
-- **Scenario 4 (Drifted State)**: Modified canonical record fails standard run with `SeedIntegrityError` and recovers cleanly with `--recover-partial`.
-- **Scenario 5 (Runtime-Linked State)**: Runtime audit log or active analyst case modification blocks recovery with `SeedIntegrityError` and rolls back.
+- **Scenario 3 (Partial State)**: Incomplete dataset (125/175) fails standard run with `PartialSeedAbortedError` and recovers cleanly with `--recover-partial`.
+- **Scenario 4 (Runtime Heuristic Assessment Block)**: Mandatory test - runtime `HEURISTIC_RULES_V1` assessment attached to a canonical tx aborts recovery and preserves data.
+- **Scenario 5 (Runtime Audit Event Block)**: Non-canonical runtime audit log referencing a canonical tx blocks recovery.
+- **Scenario 6 (Modified Analyst Case Block)**: Analyst case with human workflow activity (`IN_REVIEW`, notes) blocks recovery.
+- **Scenario 7 (Modified Canonical Record Drift & Recovery)**: Modified amount triggers `SeedIntegrityError` on standard run and recovers cleanly with `--recover-partial`.
+- **Scenario 8 (Unexpected Merchant Audit Dependency Block)**: Non-seed audit log attached to merchant blocks recovery.
+- **Scenario 9 (Atomic Rollback Guarantee)**: When recovery safety boundary triggers, 0 records are deleted due to atomic rollback.
+- **Scenario 10 (Successful Recovery Exact Counts)**: Successful recovery restores exactly 1 merchant, 175 tx, 175 ra, 14 cases, 176 audit logs.

@@ -20,7 +20,7 @@ class Transaction {
 
   Transaction({
     required this.id,
-    required dynamic amount,
+    required this.amount,
     this.currency = 'BDT',
     required this.merchantName,
     required this.merchantCategory,
@@ -34,11 +34,12 @@ class Transaction {
     required this.timestamp,
     this.analystResolution,
     this.analystNotes,
-  }) : amount = amount is Money
-            ? amount
-            : amount is String
-                ? Money.fromDecimalString(amount)
-                : Money.fromNum(amount as num) {
+  }) {
+    if (amount.minorUnits <= 0) {
+      throw ArgumentError(
+        'Transaction amount must be strictly positive: got ${amount.toDecimalString()}',
+      );
+    }
     // Explicit runtime validation guarantees invalid risk scores (< 0 or > 100)
     // throw ArgumentError even in release builds where assertions are disabled.
     AppRiskConstants.validateScore(riskScore);
@@ -49,12 +50,21 @@ class Transaction {
 
   factory Transaction.fromJson(Map<String, dynamic> json) {
     final ref = (json['reference'] ?? json['id'] ?? '').toString();
+    if (!json.containsKey('amount') || json['amount'] == null) {
+      throw const FormatException('Transaction JSON missing mandatory "amount" field');
+    }
     final rawAmount = json['amount'];
-    final Money parsedAmount = rawAmount is String
-        ? Money.fromDecimalString(rawAmount)
-        : rawAmount is num
-            ? Money.fromNum(rawAmount)
-            : Money.zero;
+    if (rawAmount is! String) {
+      throw FormatException(
+        'Transaction "amount" must be a JSON string, got ${rawAmount.runtimeType}: $rawAmount',
+      );
+    }
+    final Money parsedAmount = Money.fromDecimalString(rawAmount);
+    if (parsedAmount.minorUnits <= 0) {
+      throw FormatException(
+        'Transaction amount must be strictly positive, got "$rawAmount"',
+      );
+    }
 
     final score = (json['risk_score'] as num?)?.toInt() ?? 10;
     final clampedScore = score.clamp(0, 100);
@@ -73,16 +83,16 @@ class Transaction {
       resolution = 'MARK_LEGITIMATE';
     }
 
-    DateTime parsedDate = DateTime.now();
+    DateTime parsedDate = DateTime.now().toUtc();
     if (json['created_at'] != null) {
-      parsedDate = DateTime.tryParse(json['created_at'].toString()) ?? parsedDate;
+      parsedDate = DateTime.tryParse(json['created_at'].toString())?.toUtc() ?? parsedDate;
     }
 
     return Transaction(
       id: ref,
       amount: parsedAmount,
       currency: json['currency']?.toString() ?? 'BDT',
-      merchantName: json['counterparty_name']?.toString() ?? 'Shadhin Pay',
+      merchantName: json['counterparty_name']?.toString() ?? 'PayShield Demo Merchant',
       merchantCategory: 'Retail',
       riskScore: clampedScore,
       riskFactors: factors,
