@@ -8,6 +8,7 @@ import '../../../core/config/app_risk_constants.dart';
 import '../../../core/role/demo_role.dart';
 import '../../../core/utils/currency_formatter.dart';
 import '../../../core/utils/date_formatter.dart';
+import '../../../core/utils/money.dart';
 import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/metric_bento.dart';
@@ -508,7 +509,9 @@ class DashboardScreen extends ConsumerWidget {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    final amount = double.tryParse(amountController.text) ?? 5000.0;
+                    final amount = Money.fromDecimalString(
+                      amountController.text.trim().isEmpty ? '5000.00' : amountController.text.trim(),
+                    );
                     final newTx = Transaction(
                       id: 'tx_demo_${DateTime.now().millisecondsSinceEpoch}',
                       amount: amount,

@@ -113,13 +113,13 @@ def test_analyst_cases_table_permissions(db_admin_connection):
 
 
 def test_analyst_cases_column_permissions(db_admin_connection):
-    """Verify column-level UPDATE on analyst_cases is granted only on allowed workflow columns."""
+    """Verify column-level UPDATE on analyst_cases is granted only on approved workflow columns."""
     conn, db_name = db_admin_connection
-    allowed_cols = ["case_status", "assigned_analyst", "resolution_note", "resolved_at", "updated_at"]
+    allowed_cols = ["case_status", "resolution_note", "resolved_at", "updated_at"]
     for col in allowed_cols:
         assert conn.execute(text(f"SELECT has_column_privilege('payshield_app', 'analyst_cases', '{col}', 'UPDATE')")).scalar_one() is True
 
-    denied_cols = ["id", "transaction_id", "priority", "trigger_reason", "created_at"]
+    denied_cols = ["id", "transaction_id", "priority", "trigger_reason", "assigned_analyst", "created_at"]
     for col in denied_cols:
         assert conn.execute(text(f"SELECT has_column_privilege('payshield_app', 'analyst_cases', '{col}', 'UPDATE')")).scalar_one() is False
 

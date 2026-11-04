@@ -1,12 +1,13 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../domain/dashboard_kpi.dart';
-import '../../transactions/data/mock_transactions.dart';
 import '../../../core/config/app_risk_constants.dart';
+import '../../../core/utils/money.dart';
+import '../../transactions/data/mock_transactions.dart';
+import '../domain/dashboard_kpi.dart';
 
 final dashboardKpiProvider = Provider<DashboardKpi>((ref) {
   final transactions = ref.watch(transactionsProvider);
 
-  double totalVolume = 0;
+  Money totalVolume = Money.zero;
   int approvedCount = 0;
   int reviewCount = 0;
   int blockedCount = 0;

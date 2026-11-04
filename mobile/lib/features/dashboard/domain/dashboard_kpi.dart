@@ -1,5 +1,7 @@
+import '../../../core/utils/money.dart';
+
 class DashboardKpi {
-  final double totalVolume;
+  final Money totalVolume;
   final int totalCount;
   final int approvedCount;
   final int reviewCount;
@@ -9,8 +11,8 @@ class DashboardKpi {
   final double blockRate;
   final int averageRiskScore;
 
-  const DashboardKpi({
-    required this.totalVolume,
+  DashboardKpi({
+    required dynamic totalVolume,
     required this.totalCount,
     required this.approvedCount,
     required this.reviewCount,
@@ -19,5 +21,9 @@ class DashboardKpi {
     required this.reviewRate,
     required this.blockRate,
     required this.averageRiskScore,
-  });
+  }) : totalVolume = totalVolume is Money
+            ? totalVolume
+            : totalVolume is String
+                ? Money.fromDecimalString(totalVolume)
+                : Money.fromNum(totalVolume as num);
 }

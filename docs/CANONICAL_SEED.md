@@ -70,15 +70,36 @@ Seeding `payshield_dev` inserts all 5 interrelated entity layers in a single tra
 python -m scripts.seed_demo_data
 ```
 
-### Idempotent Verification:
-Rerunning `seed_demo_data.py` on an already-seeded database runs an exact-match comparison across all 5 entities and exits without modifications:
+### Idempotent Field-by-Field Verification:
+Rerunning `seed_demo_data.py` on an already-seeded database runs a comprehensive exact-match comparison across all fields of all 5 entity sets (Merchant, 175 Transactions, 175 Risk Assessments, 14 Analyst Cases, 176 Audit Logs) and exits without any modifications:
 ```
 100% exact match verified across all 5 canonical entity sets. Database intact.
 ```
+If any drift or unexpected modification is detected (e.g. altered amount, score, status, or missing related records), the script aborts with `SeedIntegrityError`.
 
-### Partial Seed Recovery Protocol:
-If an interrupted or partial seed state is detected ($0 < \text{count} < 175$):
+### Safe Partial Recovery Protocol:
+If an interrupted or partial seed state is detected ($0 < \text{count} < 175$), or when explicit recovery is requested:
 ```bash
 python -m scripts.seed_demo_data --recover-partial
 ```
-This selectively purges ONLY the explicitly enumerated canonical seed records (using `EXACT_AUDIT_KEYS` and `CANONICAL_REFERENCES`) without affecting any non-canonical or user-created records, and re-inserts the clean canonical set.
+
+#### Safe Recovery Boundary & Invariants:
+1. **Safety Boundary Checks**:
+   - Refuses deletion and rolls back if any non-seed runtime audit logs reference canonical transactions (`AuditLog.idempotency_key NOT IN EXACT_AUDIT_KEYS`).
+   - Refuses deletion and rolls back if any analyst cases have active human workflow modifications (`case_status != 'OPEN'`, or non-null `assigned_analyst`, `resolution_note`, or `resolved_at`).
+2. **Explicit Key Deletions**:
+   - Deletions are strictly bounded to enumerated canonical primary keys (`CANONICAL_REFERENCES`) and exact audit keys (`EXACT_AUDIT_KEYS`).
+   - Wildcard deletions (e.g. `LIKE 'canonical_seeded:%'`) are strictly prohibited.
+3. **Merchant Audit Log Invariant**:
+   - The merchant audit log (`canonical_seeded:merchant:pay_shield_demo`) is reconciled and guaranteed to exist even when the `merchants` row already pre-exists.
+   - Recovery always yields exactly 176 canonical audit logs.
+4. **All-or-Nothing Transaction Boundary**:
+   - Deletion, re-insertion, and final field-by-field verification execute within a single atomic database transaction. If any validation fails, the entire recovery transaction is rolled back.
+
+### Automated Recovery Test Suite:
+Continuous verification of recovery and idempotency is provided in `backend/tests/test_seed_recovery.py`:
+- **Scenario 1 (Empty State)**: Clean database seeds to 175 tx, 175 assessments, 14 cases, 176 audit logs.
+- **Scenario 2 (Fully Seeded State)**: Idempotent run with `recover_partial=False` detects 175 records, verifies all 5 entity sets, and returns `VERIFIED_EXISTING` without mutation.
+- **Scenario 3 (Partial State)**: Interrupted dataset fails standard run with `PartialSeedAbortedError` and recovers cleanly with `--recover-partial`.
+- **Scenario 4 (Drifted State)**: Modified canonical record fails standard run with `SeedIntegrityError` and recovers cleanly with `--recover-partial`.
+- **Scenario 5 (Runtime-Linked State)**: Runtime audit log or active analyst case modification blocks recovery with `SeedIntegrityError` and rolls back.

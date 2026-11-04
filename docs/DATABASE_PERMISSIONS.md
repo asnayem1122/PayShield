@@ -15,7 +15,7 @@ The PayShield persistence model enforces least privilege directly in PostgreSQL 
 | **Table `merchants`** | `ALL PRIVILEGES` | `SELECT` only | `NO PRIVILEGES` |
 | **Table `transactions`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(transaction_status, updated_at)` | `NO PRIVILEGES` |
 | **Table `risk_assessments`** | `ALL PRIVILEGES` | `SELECT`, `INSERT` (append-only) | `NO PRIVILEGES` |
-| **Table `analyst_cases`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(case_status, assigned_analyst, resolution_note, resolved_at, updated_at)` | `NO PRIVILEGES` |
+| **Table `analyst_cases`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(case_status, resolution_note, resolved_at, updated_at)` | `NO PRIVILEGES` |
 | **Table `audit_logs`** | `ALL PRIVILEGES` | `SELECT`, `INSERT` (append-only) | `NO PRIVILEGES` |
 | **Sequences** | `ALL PRIVILEGES` | `NO PRIVILEGES` (UUIDs use `gen_random_uuid()`) | `NO PRIVILEGES` |
 
@@ -56,8 +56,11 @@ REVOKE UPDATE ON TABLE transactions FROM payshield_app;
 REVOKE UPDATE ON TABLE analyst_cases FROM payshield_app;
 
 GRANT UPDATE (transaction_status, updated_at) ON TABLE transactions TO payshield_app;
-GRANT UPDATE (case_status, assigned_analyst, resolution_note, resolved_at, updated_at) ON TABLE analyst_cases TO payshield_app;
+GRANT UPDATE (case_status, resolution_note, resolved_at, updated_at) ON TABLE analyst_cases TO payshield_app;
 ```
+
+> **Security Note on Case Assignment Immutability:**
+> In accordance with least-privilege security specifications, `assigned_analyst` is immutable at runtime for `payshield_app`. Analysts cannot alter the assigned analyst of an existing case via standard API updates. Case ownership is assigned at creation or managed exclusively via administrative/system workflows.
 
 ---
 

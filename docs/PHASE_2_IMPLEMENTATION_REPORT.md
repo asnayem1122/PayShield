@@ -54,11 +54,14 @@ Implemented all 5 core entity models:
   - Row 157 remediated: $1,859.00 - 345.00 = \mathbf{1,514.00}$ BDT.
   - Target totals matched to the exact decimal: Approved = ৳ 280,200.00; Total = ৳ 482,500.00.
 
-### 2.5. Multi-Entity Canonical Seeding System
+### 2.5. Multi-Entity Canonical Seeding System & Safe Recovery
 - Created `backend/scripts/seed_demo_data.py`:
   - Multi-entity transactional seeding: 1 merchant, 175 transactions, 175 risk assessments, 14 analyst cases, 176 audit logs.
-  - Idempotent rerun verification: exact-match validation against all 5 tables with 0 changes.
-  - Safe recovery protocol: `--recover-partial` deletes only explicitly enumerated canonical keys without affecting application data.
+  - Field-by-field exact-match verification: compares every single column and relationship across all 5 entity sets (Merchant name/category/status, all 12 transaction columns, all assessment scores/factors/policies, all 14 cases, and all 176 audit logs).
+  - Safe recovery protocol: `--recover-partial` deletes only explicitly enumerated canonical keys (`CANONICAL_REFERENCES`, `EXACT_AUDIT_KEYS`) without wildcard deletion or affecting application data.
+  - Boundary assertions: refuses deletion and rolls back if non-canonical runtime audit logs reference canonical transactions or if analyst cases have active human workflow state.
+  - Merchant audit log reconciliation: guarantees exactly 176 audit logs even when the `merchants` row already pre-existed.
+  - Automated recovery test suite in `backend/tests/test_seed_recovery.py`: verifies empty, fully seeded, partial, drifted, and runtime-linked states across 6 automated tests.
 
 ### 2.6. Effective PostgreSQL Permission Audit Tests
 - Created `backend/tests/test_permissions_phase2.py`:
@@ -66,7 +69,7 @@ Implemented all 5 core entity models:
   - Verified `PUBLIC` has no CREATE on database or schema.
   - Verified `merchants` is read-only (`SELECT` only).
   - Verified `transactions` allows `UPDATE` exclusively on `(transaction_status, updated_at)`.
-  - Verified `analyst_cases` allows `UPDATE` exclusively on `(case_status, assigned_analyst, resolution_note, resolved_at, updated_at)`.
+  - Verified `analyst_cases` allows `UPDATE` exclusively on `(case_status, resolution_note, resolved_at, updated_at)`. Revoked `assigned_analyst` UPDATE grant to enforce case assignment immutability at runtime.
   - Verified `risk_assessments` and `audit_logs` are append-only.
   - Verified across both `payshield_dev` and `payshield_test`. All 18 tests passed!
 
@@ -94,14 +97,23 @@ Implemented all 5 core entity models:
   - `GET /api/v1/risk/indicators` and `POST /api/v1/risk/assess`
   - `GET /api/v1/audit/logs`
 
-### 2.9. Flutter Integration & Zero Regression
+### 2.9. Flutter Integration, Decimal-Safe Money & Zero Regression
+- Implemented `Money` value object (`mobile/lib/core/utils/money.dart`) backed by integer minor units (`minorUnits` in poisha/cents):
+  - Completely eliminates binary `double` floating-point arithmetic from financial volume calculations.
+  - Strict 2-decimal string serialization wire contract (`toDecimalString()`, `fromDecimalString()`).
+  - Seamlessly integrates with BDT formatters (`toFormattedBdt()`, `toCompactBdt()`).
+- Reconciled Flutter canonical offline fallback (`canonical_transactions_fixture.dart` and `mock_transactions.dart`):
+  - Removed old single-row remainder subtraction.
+  - Applies identical uniform surplus deduction ($151 \times 346 + 7 \times 345 = 54,661$ BDT).
+  - All 158 approved amounts strictly positive (৳ 1,007.00 to ৳ 2,630.00).
+  - Row 157 (`tx_app_1157`) is exactly ৳ 1,514.00.
+  - Exact totals: Approved ৳ 280,200.00; Review ৳ 147,300.00; Blocked ৳ 55,000.00; Total ৳ 482,500.00.
 - Integrated `http` networking in `mobile/`.
 - Implemented `ApiClient` in `mobile/lib/core/network/api_client.dart` with platform-aware base URL resolution (`10.0.2.2:8000` for Android emulator, `127.0.0.1:8000` for desktop/web).
-- Added `Transaction.fromJson` and `Transaction.toJson` supporting strict decimal serialization.
 - Enhanced `TransactionsNotifier` to live-sync with backend on startup, pull-to-refresh, case resolution, and simulated transaction creation, while seamlessly falling back to local canonical data in offline or test mode.
 - Pull-to-refresh added to `DashboardScreen` and `TransactionHistoryScreen`.
 - `flutter analyze`: 0 issues found.
-- `flutter test`: 24/24 tests passed (0 failures, 0 warnings, zero UI or theme regression).
+- `flutter test`: 29/29 tests passed (0 failures, 0 warnings, zero UI or theme regression).
 
 ---
 
@@ -109,22 +121,23 @@ Implemented all 5 core entity models:
 
 ### 3.1. Backend Pytest Suite
 ```
-collected 63 items
+collected 69 items
 
 backend/tests/test_api_analyst_cases.py ...                              [  4%]
-backend/tests/test_api_dashboard.py ...                                  [  9%]
-backend/tests/test_api_transactions.py .......                           [ 20%]
-backend/tests/test_config.py .....                                       [ 28%]
-backend/tests/test_database.py .....                                     [ 36%]
-backend/tests/test_health.py ..                                          [ 39%]
-backend/tests/test_migrations.py .                                       [ 41%]
-backend/tests/test_permissions.py .........                              [ 55%]
-backend/tests/test_permissions_phase2.py ..................              [ 84%]
-backend/tests/test_readiness.py ...                                      [ 88%]
-backend/tests/test_risk_scoring.py .....                                 [ 96%]
+backend/tests/test_api_dashboard.py ...                                  [  8%]
+backend/tests/test_api_transactions.py .......                           [ 18%]
+backend/tests/test_config.py .....                                       [ 26%]
+backend/tests/test_database.py .....                                     [ 33%]
+backend/tests/test_health.py ..                                          [ 36%]
+backend/tests/test_migrations.py .                                       [ 37%]
+backend/tests/test_permissions.py .........                              [ 50%]
+backend/tests/test_permissions_phase2.py ..................              [ 76%]
+backend/tests/test_readiness.py ...                                      [ 81%]
+backend/tests/test_risk_scoring.py .....                                 [ 88%]
+backend/tests/test_seed_recovery.py ......                               [ 97%]
 backend/tests/test_seed_verification.py ..                               [100%]
 
-======================== 63 passed, 1 warning in 4.12s ========================
+======================= 69 passed, 1 warning in 15.91s =======================
 ```
 
 ### 3.2. Flutter Test Suite
@@ -132,29 +145,34 @@ backend/tests/test_seed_verification.py ..                               [100%]
 00:00 +0: loading D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart
 00:00 +0: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: ApiClient Unit Tests Default base URL is configured properly for platform
 00:00 +1: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: ApiClient Unit Tests Allows overriding base URL
-00:00 +2: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Transaction Serialization & Wire Contract Transaction.fromJson accurately parses canonical JSON payload
-00:00 +3: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Transaction Serialization & Wire Contract Transaction.toJson accurately produces decimal wire format
-00:00 +4: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Validates score strictly between 0 and 100 with explicit ArgumentError
-00:00 +5: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Maps risk score to correct RiskLevel and RiskAction
-00:00 +6: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Transaction entity constructor rejects invalid scores with ArgumentError and accepts 0 and 100
-00:00 +7: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Dataset contains exactly 175 transactions
-00:00 +8: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Status counts match: 158 Approved, 14 Review, 3 Blocked
-00:00 +9: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Total transaction volume sums exactly to ৳ 482,500.00
-00:00 +10: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Local mock state modification updates analyst case resolution
-00:00 +11: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Initializes with system default when no preference is saved
-00:00 +12: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Loads saved theme preference synchronously
-00:00 +13: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Updates and persists theme mode selection
-00:00 +14: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Light theme text colors satisfy WCAG AA (>= 4.5:1) against canvas
-00:00 +15: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Light theme telemetry labels satisfy WCAG AA against canvas and card
-00:00 +16: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Dark theme text colors satisfy WCAG AA (>= 4.5:1) against void canvas and cards
-00:00 +17: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Dark theme telemetry labels satisfy WCAG AA against dark surfaces
-00:00 +18: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: Small Screen (320x568 dp) Overflow Verification Dashboard renders on compact screen without overflow
-00:01 +19: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
-00:01 +20: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
-00:01 +21: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
-00:01 +22: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: WCAG Large Text Scaling (1.5x) Verification Dashboard scales cleanly under 1.5x text scaler
-00:01 +23: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: Accessibility & Semantics Verification RiskBadge provides explicit semantic accessibility labels
-00:01 +24: All tests passed!
+00:00 +2: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Decimal-Safe Money Value Object Parses decimal string without floating-point conversion
+00:00 +3: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Decimal-Safe Money Value Object Rejects floating-point arithmetic errors on repeated fractional addition
+00:00 +4: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Transaction Serialization & Wire Contract Transaction.fromJson accurately parses canonical JSON payload into Money
+00:00 +5: D:/Code/PayShield/mobile/test/unit/api_client_and_integration_test.dart: Transaction Serialization & Wire Contract Transaction.toJson accurately produces decimal wire format
+00:00 +6: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Validates score strictly between 0 and 100 with explicit ArgumentError
+00:00 +7: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Maps risk score to correct RiskLevel and RiskAction
+00:00 +8: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: AppRiskConstants Unit Tests Transaction entity constructor rejects invalid scores with ArgumentError and accepts 0 and 100
+00:00 +9: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Dataset contains exactly 175 transactions with unique references
+00:00 +10: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Status counts match: 158 Approved, 14 Review, 3 Blocked
+00:00 +11: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency All 175 transactions have strictly positive amounts
+00:00 +12: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Merchant category counts are correctly distributed
+00:00 +13: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Exact financial volumes in integer minor units without floating-point error
+00:00 +14: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency tx_app_1157 specific regression test for v1.0.1 canonical remediation
+00:00 +15: D:/Code/PayShield/mobile/test/unit/risk_constants_and_data_test.dart: Canonical Mock Dataset Reconciled Consistency Local mock state modification updates analyst case resolution
+00:00 +16: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Initializes with system default when no preference is saved
+00:00 +17: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Loads saved theme preference synchronously
+00:00 +18: D:/Code/PayShield/mobile/test/unit/theme_test.dart: ThemeController Unit Tests Updates and persists theme mode selection
+00:00 +19: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Light theme text colors satisfy WCAG AA (>= 4.5:1) against canvas
+00:00 +20: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Light theme telemetry labels satisfy WCAG AA against canvas and card
+00:00 +21: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Dark theme text colors satisfy WCAG AA (>= 4.5:1) against void canvas and cards
+00:00 +22: D:/Code/PayShield/mobile/test/unit/theme_test.dart: WCAG Contrast Ratios Verification Dark theme telemetry labels satisfy WCAG AA against dark surfaces
+00:00 +23: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: Small Screen (320x568 dp) Overflow Verification Dashboard renders on compact screen without overflow
+00:01 +24: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
+00:01 +25: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
+00:01 +26: D:/Code/PayShield/mobile/test/widget_test.dart: PayShieldApp initial smoke test mounts Dashboard
+00:01 +27: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: WCAG Large Text Scaling (1.5x) Verification Dashboard scales cleanly under 1.5x text scaler
+00:01 +28: D:/Code/PayShield/mobile/test/widgets/screen_layout_test.dart: Accessibility & Semantics Verification RiskBadge provides explicit semantic accessibility labels
+00:01 +29: All tests passed!
 ```
 
 ---

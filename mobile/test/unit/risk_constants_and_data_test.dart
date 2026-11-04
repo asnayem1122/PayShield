@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/core/config/app_risk_constants.dart';
+import 'package:mobile/core/utils/money.dart';
 import 'package:mobile/features/transactions/data/mock_transactions.dart';
 import 'package:mobile/features/transactions/domain/transaction_model.dart';
 
@@ -99,38 +100,100 @@ void main() {
   });
 
   group('Canonical Mock Dataset Reconciled Consistency', () {
-    final notifier = TransactionsNotifier();
-    final list = notifier.state;
+    final list = generateCanonicalTransactionsFixture();
 
-    test('Dataset contains exactly 175 transactions', () {
+    test('Dataset contains exactly 175 transactions with unique references', () {
       expect(list.length, equals(175));
+      final uniqueIds = list.map((tx) => tx.id).toSet();
+      expect(uniqueIds.length, equals(175));
     });
 
     test('Status counts match: 158 Approved, 14 Review, 3 Blocked', () {
-      final approved = list.where((tx) => tx.recommendedAction == RiskAction.approve).length;
-      final review = list.where((tx) => tx.recommendedAction == RiskAction.review).length;
-      final blocked = list.where((tx) => tx.recommendedAction == RiskAction.block).length;
+      final approved = list.where((tx) => tx.recommendedAction == RiskAction.approve).toList();
+      final review = list.where((tx) => tx.recommendedAction == RiskAction.review).toList();
+      final blocked = list.where((tx) => tx.recommendedAction == RiskAction.block).toList();
 
-      expect(approved, equals(158));
-      expect(review, equals(14));
-      expect(blocked, equals(3));
-      expect(approved + review + blocked, equals(175));
+      expect(approved.length, equals(158));
+      expect(review.length, equals(14));
+      expect(blocked.length, equals(3));
+      expect(approved.length + review.length + blocked.length, equals(175));
 
-      final approvalRate = (approved / 175) * 100;
-      final reviewRate = (review / 175) * 100;
-      final blockRate = (blocked / 175) * 100;
+      final approvalRate = (approved.length / 175) * 100;
+      final reviewRate = (review.length / 175) * 100;
+      final blockRate = (blocked.length / 175) * 100;
 
       expect(approvalRate.toStringAsFixed(1), equals('90.3'));
       expect(reviewRate.toStringAsFixed(1), equals('8.0'));
       expect(blockRate.toStringAsFixed(1), equals('1.7'));
     });
 
-    test('Total transaction volume sums exactly to ৳ 482,500.00', () {
-      final totalVolume = list.fold<double>(0.0, (acc, tx) => acc + tx.amount);
-      expect(totalVolume, equals(482500.0));
+    test('All 175 transactions have strictly positive amounts', () {
+      for (final tx in list) {
+        expect(tx.amount.minorUnits > 0, isTrue,
+            reason: '${tx.id} has non-positive amount ${tx.amount.toDecimalString()}');
+      }
+
+      final approvedTxs = list.where((t) => t.recommendedAction == RiskAction.approve).toList();
+      final minApp = approvedTxs.map((t) => t.amount.minorUnits).reduce((a, b) => a < b ? a : b);
+      final maxApp = approvedTxs.map((t) => t.amount.minorUnits).reduce((a, b) => a > b ? a : b);
+
+      expect(minApp, equals(100700)); // ৳ 1,007.00
+      expect(maxApp, equals(263000)); // ৳ 2,630.00
+    });
+
+    test('Merchant category counts are correctly distributed', () {
+      final categories = <String, int>{};
+      for (final tx in list) {
+        categories[tx.merchantCategory] = (categories[tx.merchantCategory] ?? 0) + 1;
+      }
+
+      expect(categories.containsKey('Electronics'), isTrue);
+      expect(categories.containsKey('Fashion'), isTrue);
+      expect(categories.containsKey('Grocery'), isTrue);
+      expect(categories.containsKey('Footwear'), isTrue);
+      expect(categories.containsKey('Retail'), isTrue);
+      expect(categories.containsKey('Jewelry'), isTrue);
+      expect(categories.containsKey('Digital Goods'), isTrue);
+    });
+
+    test('Exact financial volumes in integer minor units without floating-point error', () {
+      final appVol = list
+          .where((t) => t.recommendedAction == RiskAction.approve)
+          .fold<Money>(Money.zero, (acc, tx) => acc + tx.amount);
+      final revVol = list
+          .where((t) => t.recommendedAction == RiskAction.review)
+          .fold<Money>(Money.zero, (acc, tx) => acc + tx.amount);
+      final blkVol = list
+          .where((t) => t.recommendedAction == RiskAction.block)
+          .fold<Money>(Money.zero, (acc, tx) => acc + tx.amount);
+      final totVol = list.fold<Money>(Money.zero, (acc, tx) => acc + tx.amount);
+
+      expect(appVol.minorUnits, equals(28020000)); // ৳ 280,200.00
+      expect(appVol.toDecimalString(), equals('280200.00'));
+
+      expect(revVol.minorUnits, equals(14730000)); // ৳ 147,300.00
+      expect(revVol.toDecimalString(), equals('147300.00'));
+
+      expect(blkVol.minorUnits, equals(5500000)); // ৳ 55,000.00
+      expect(blkVol.toDecimalString(), equals('55000.00'));
+
+      expect(totVol.minorUnits, equals(48250000)); // ৳ 482,500.00
+      expect(totVol.toDecimalString(), equals('482500.00'));
+    });
+
+    test('tx_app_1157 specific regression test for v1.0.1 canonical remediation', () {
+      final tx1157 = list.firstWhere((tx) => tx.id == 'tx_app_1157');
+      expect(tx1157.id, equals('tx_app_1157'));
+      expect(tx1157.amount.minorUnits, equals(151400));
+      expect(tx1157.amount.toDecimalString(), equals('1514.00'));
+      expect(tx1157.riskScore, equals(25));
+      expect(tx1157.riskLevel, equals(RiskLevel.low));
+      expect(tx1157.recommendedAction, equals(RiskAction.approve));
+      expect(tx1157.currency, equals('BDT'));
     });
 
     test('Local mock state modification updates analyst case resolution', () {
+      final notifier = TransactionsNotifier();
       final testTxId = list.first.id;
       notifier.resolveCase(testTxId, 'CONFIRM_FRAUD', 'Confirmed by automated test');
 

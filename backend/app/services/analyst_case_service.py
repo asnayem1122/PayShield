@@ -80,7 +80,6 @@ class AnalystCaseService:
             session,
             case,
             status=payload.case_status,
-            assigned_analyst=payload.assigned_analyst,
             resolution_note=payload.resolution_note,
         )
 

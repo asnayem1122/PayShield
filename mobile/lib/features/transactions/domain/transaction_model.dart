@@ -1,8 +1,9 @@
 import '../../../core/config/app_risk_constants.dart';
+import '../../../core/utils/money.dart';
 
 class Transaction {
   final String id;
-  final double amount;
+  final Money amount;
   final String currency;
   final String merchantName;
   final String merchantCategory;
@@ -19,7 +20,7 @@ class Transaction {
 
   Transaction({
     required this.id,
-    required this.amount,
+    required dynamic amount,
     this.currency = 'BDT',
     required this.merchantName,
     required this.merchantCategory,
@@ -33,7 +34,11 @@ class Transaction {
     required this.timestamp,
     this.analystResolution,
     this.analystNotes,
-  }) {
+  }) : amount = amount is Money
+            ? amount
+            : amount is String
+                ? Money.fromDecimalString(amount)
+                : Money.fromNum(amount as num) {
     // Explicit runtime validation guarantees invalid risk scores (< 0 or > 100)
     // throw ArgumentError even in release builds where assertions are disabled.
     AppRiskConstants.validateScore(riskScore);
@@ -45,9 +50,11 @@ class Transaction {
   factory Transaction.fromJson(Map<String, dynamic> json) {
     final ref = (json['reference'] ?? json['id'] ?? '').toString();
     final rawAmount = json['amount'];
-    final parsedAmount = rawAmount is num
-        ? rawAmount.toDouble()
-        : double.tryParse(rawAmount?.toString() ?? '0.0') ?? 0.0;
+    final Money parsedAmount = rawAmount is String
+        ? Money.fromDecimalString(rawAmount)
+        : rawAmount is num
+            ? Money.fromNum(rawAmount)
+            : Money.zero;
 
     final score = (json['risk_score'] as num?)?.toInt() ?? 10;
     final clampedScore = score.clamp(0, 100);
@@ -93,7 +100,7 @@ class Transaction {
   Map<String, dynamic> toJson() {
     return {
       'reference': id,
-      'amount': amount.toStringAsFixed(2),
+      'amount': amount.toDecimalString(),
       'currency': currency,
       'counterparty_name': merchantName,
       'channel': 'MOBILE_APP',
@@ -114,7 +121,7 @@ class Transaction {
 
   Transaction copyWith({
     String? id,
-    double? amount,
+    dynamic amount,
     String? currency,
     String? merchantName,
     String? merchantCategory,

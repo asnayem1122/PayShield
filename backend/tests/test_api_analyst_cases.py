@@ -52,10 +52,9 @@ def test_get_and_update_case():
     assert get_res.status_code == 200
     assert get_res.json()["id"] == case_id
 
-    # Update case
+    # Update case workflow
     patch_payload = {
         "case_status": "IN_REVIEW",
-        "assigned_analyst": "analyst_shafiq",
         "resolution_note": "Under investigation by lead fraud analyst.",
         "actor_id": "analyst_shafiq",
     }
@@ -63,7 +62,6 @@ def test_get_and_update_case():
     assert patch_res.status_code == 200
     updated = patch_res.json()
     assert updated["case_status"] == "IN_REVIEW"
-    assert updated["assigned_analyst"] == "analyst_shafiq"
     assert updated["resolution_note"] == "Under investigation by lead fraud analyst."
 
 

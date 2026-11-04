@@ -62,7 +62,6 @@ class AnalystCaseRepository:
         session: Session,
         case: AnalystCase,
         status: str | None = None,
-        assigned_analyst: str | None = None,
         resolution_note: str | None = None,
     ) -> AnalystCase:
         now = datetime.now(timezone.utc)
@@ -72,8 +71,6 @@ class AnalystCaseRepository:
                 case.resolved_at = now
             elif status in ("OPEN", "IN_REVIEW"):
                 case.resolved_at = None
-        if assigned_analyst is not None:
-            case.assigned_analyst = assigned_analyst
         if resolution_note is not None:
             case.resolution_note = resolution_note
         case.updated_at = now
