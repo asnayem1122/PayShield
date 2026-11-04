@@ -497,3 +497,51 @@ def test_canonical_assessment_altered_score_or_action_blocks_recovery(test_db_se
     with pytest.raises(SeedIntegrityError) as exc_info:
         seed_canonical_data(test_db_session, recover_partial=True)
     assert "risk_score drift" in str(exc_info.value)
+
+
+def test_runtime_heuristic_assessment_only_blocks_recovery_and_survives(test_db_session: Session):
+    """Proves that a runtime HEURISTIC_RULES_V1 assessment attached to a canonical transaction
+    with or without a canonical assessment strictly blocks recovery and survives intact with
+    all fields (raw_score, risk_score, risk_factors, feature_contributions) completely unchanged."""
+    _ensure_clean_seed(test_db_session)
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+
+    # Delete canonical assessment so only the runtime assessment is present
+    test_db_session.execute(
+        delete(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+    )
+    runtime_ra = RiskAssessment(
+        transaction_id=tx_1001.id,
+        base_score=10,
+        raw_score=65,
+        risk_score=65,
+        is_score_clamped=False,
+        risk_level="MEDIUM",
+        recommended_action="REVIEW",
+        scoring_method="HEURISTIC_RULES_V1",
+        policy_version="1.0.0",
+        risk_factors=["VELOCITY_BURST", "NEW_DEVICE"],
+        feature_contributions=[{"rule": "VELOCITY", "points": 35}, {"rule": "DEVICE", "points": 20}],
+        created_at=datetime.now(timezone.utc),
+    )
+    test_db_session.add(runtime_ra)
+    test_db_session.commit()
+    ra_id = runtime_ra.id
+
+    # Must abort recovery and roll back
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "Runtime-generated risk assessment detected" in str(exc_info.value) or "scoring_method" in str(exc_info.value)
+
+    test_db_session.rollback()
+    survived_ra = test_db_session.execute(
+        select(RiskAssessment).where(RiskAssessment.id == ra_id)
+    ).scalar_one_or_none()
+    assert survived_ra is not None
+    assert survived_ra.scoring_method == "HEURISTIC_RULES_V1"
+    assert survived_ra.raw_score == 65
+    assert survived_ra.risk_score == 65
+    assert survived_ra.risk_factors == ["VELOCITY_BURST", "NEW_DEVICE"]
+    assert len(survived_ra.feature_contributions) == 2

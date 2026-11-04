@@ -99,9 +99,11 @@ class Money implements Comparable<Money> {
 
   /// Compact Bangladeshi Taka formatted string (e.g. "৳ 482,500").
   String toCompactBdt() {
-    final major = (minorUnits / 100.0).round();
+    final isNeg = minorUnits < 0;
+    final absVal = minorUnits.abs();
+    final major = (absVal + 50) ~/ 100;
     final formatted = NumberFormat.currency(symbol: '৳ ', decimalDigits: 0).format(major);
-    return formatted;
+    return isNeg ? '-$formatted' : formatted;
   }
 
   @override

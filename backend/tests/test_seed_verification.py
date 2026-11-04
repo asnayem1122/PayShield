@@ -318,3 +318,29 @@ def test_drift_audit_log_details(dev_db_session: Session) -> None:
         assert "details drift" in str(exc_info.value)
     finally:
         dev_db_session.rollback()
+
+
+def test_canonical_specs_exact_timestamp_equality_with_flutter() -> None:
+    """Verify that all 175 transaction specs have exact UTC instants matching the Flutter fixture."""
+    from datetime import datetime, timezone
+    specs = get_canonical_transaction_specs()
+    spec_map = {s["reference"]: s for s in specs}
+
+    base_time = datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc)
+
+    # 1. 3 Blocked transactions
+    assert spec_map["tx_c6b8d0f2_block"]["created_at"] == base_time - timedelta(minutes=12)
+    assert spec_map["tx_7e9a4f10_block"]["created_at"] == base_time - timedelta(hours=1, minutes=40)
+    assert spec_map["tx_3d2c1b99_block"]["created_at"] == base_time - timedelta(hours=3, minutes=15)
+
+    # 2. 14 Review transactions
+    for i in range(14):
+        ref = f"tx_rev_{100 + i}"
+        expected_dt = base_time - timedelta(hours=i + 1, minutes=i * 7)
+        assert spec_map[ref]["created_at"] == expected_dt, f"Drift in {ref} timestamp"
+
+    # 3. 158 Approved transactions
+    for i in range(158):
+        ref = f"tx_app_{1000 + i}"
+        expected_dt = base_time - timedelta(minutes=(i + 1) * 14)
+        assert spec_map[ref]["created_at"] == expected_dt, f"Drift in {ref} timestamp"

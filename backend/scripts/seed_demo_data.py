@@ -66,8 +66,14 @@ def get_canonical_transaction_specs() -> list[dict[str, Any]]:
     base_time = datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc)
     specs: list[dict[str, Any]] = []
 
-    # 1. 3 Blocked Transactions
+    # 1. 3 Blocked Transactions (exact historical Flutter fixture intervals from base_time)
     for i, (ref, amt, score, status, level, action, merch, cat) in enumerate(BLOCKED_TRANSACTIONS):
+        if i == 0:
+            created_dt = base_time - timedelta(minutes=12)
+        elif i == 1:
+            created_dt = base_time - timedelta(hours=1, minutes=40)
+        else:
+            created_dt = base_time - timedelta(hours=3, minutes=15)
         specs.append(
             {
                 "reference": ref,
@@ -82,14 +88,15 @@ def get_canonical_transaction_specs() -> list[dict[str, Any]]:
                 "risk_level": level,
                 "recommended_action": action,
                 "channel": "MOBILE_APP",
-                "created_at": base_time - timedelta(minutes=15 * (i + 1)),
+                "created_at": created_dt,
                 "trigger_reason": None,
                 "risk_factors": ["HIGH_VELOCITY", "SUSPICIOUS_IP", "DEVICE_MISMATCH"],
             }
         )
 
-    # 2. 14 Review Transactions
+    # 2. 14 Review Transactions (exact historical Flutter fixture intervals from base_time)
     for i, (ref, amt, score, status, level, action, merch, cat, reason) in enumerate(REVIEW_TRANSACTIONS):
+        created_dt = base_time - timedelta(hours=i + 1, minutes=i * 7)
         specs.append(
             {
                 "reference": ref,
@@ -104,7 +111,7 @@ def get_canonical_transaction_specs() -> list[dict[str, Any]]:
                 "risk_level": level,
                 "recommended_action": action,
                 "channel": "MOBILE_APP",
-                "created_at": base_time - timedelta(hours=i + 1, minutes=i * 5),
+                "created_at": created_dt,
                 "trigger_reason": reason,
                 "risk_factors": [reason],
             }

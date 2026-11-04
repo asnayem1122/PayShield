@@ -44,9 +44,33 @@ void main() {
       final maxMoney = Money.fromDecimalString('9999999999.99');
       expect(maxMoney.minorUnits, equals(999999999999));
       expect(maxMoney.toDecimalString(), equals('9999999999.99'));
+
+      // Boundary: Minimum positive minor unit (0.01 BDT)
+      final minPositive = Money.fromDecimalString('0.01');
+      expect(minPositive.minorUnits, equals(1));
+      expect(minPositive.toDecimalString(), equals('0.01'));
+
+      // Legitimate zero-valued aggregate (e.g. 0.00 BDT blocked volume on clean dashboard)
+      final zeroMoney = Money.fromDecimalString('0.00');
+      expect(zeroMoney.minorUnits, equals(0));
+      expect(zeroMoney.isZero, isTrue);
+      expect(zeroMoney.toDecimalString(), equals('0.00'));
+      expect(zeroMoney.toFormattedBdt(), equals('৳ 0.00'));
+      expect(zeroMoney.toCompactBdt(), equals('৳ 0'));
     });
 
     test('Rejects malformed strings, invalid decimals, and bounds overflow', () {
+      // Empty string
+      expect(() => Money.fromDecimalString(''), throwsA(isA<FormatException>()));
+
+      // Missing leading digits or trailing digits
+      expect(() => Money.fromDecimalString('.50'), throwsA(isA<FormatException>()));
+      expect(() => Money.fromDecimalString('50.'), throwsA(isA<FormatException>()));
+
+      // Explicit plus sign or scientific notation
+      expect(() => Money.fromDecimalString('+12.50'), throwsA(isA<FormatException>()));
+      expect(() => Money.fromDecimalString('1e2'), throwsA(isA<FormatException>()));
+
       // Malformed string
       expect(() => Money.fromDecimalString('abc'), throwsA(isA<FormatException>()));
 
@@ -133,6 +157,30 @@ void main() {
         'amount': 1250, // JSON int - must be rejected
       };
       expect(() => Transaction.fromJson(intJson), throwsA(isA<FormatException>()));
+
+      final boolJson = {
+        'reference': 'tx_invalid_bool',
+        'amount': true,
+      };
+      expect(() => Transaction.fromJson(boolJson), throwsA(isA<FormatException>()));
+
+      final listJson = {
+        'reference': 'tx_invalid_list',
+        'amount': ['1250.00'],
+      };
+      expect(() => Transaction.fromJson(listJson), throwsA(isA<FormatException>()));
+
+      final emptyJson = {
+        'reference': 'tx_invalid_empty',
+        'amount': '',
+      };
+      expect(() => Transaction.fromJson(emptyJson), throwsA(isA<FormatException>()));
+
+      final sciJson = {
+        'reference': 'tx_invalid_sci',
+        'amount': '1.5e3',
+      };
+      expect(() => Transaction.fromJson(sciJson), throwsA(isA<FormatException>()));
     });
 
     test('Transaction.fromJson strictly rejects missing or null amount field', () {
