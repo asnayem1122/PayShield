@@ -275,6 +275,34 @@ def test_drift_analyst_case_trigger_reason(dev_db_session: Session) -> None:
         dev_db_session.rollback()
 
 
+def test_drift_merchant_created_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in merchant created_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    orig = merchant.created_at
+    try:
+        merchant.created_at = orig - timedelta(hours=3)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "Merchant created_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
+def test_drift_merchant_updated_at_timestamp(dev_db_session: Session) -> None:
+    """Exact-match verification detects drift in merchant updated_at timestamp."""
+    merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()
+    orig = merchant.updated_at
+    try:
+        merchant.updated_at = orig + timedelta(hours=1)
+        dev_db_session.flush()
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            verify_existing_canonical_seed(dev_db_session, merchant, _get_spec_map())
+        assert "Merchant updated_at timestamp drift" in str(exc_info.value)
+    finally:
+        dev_db_session.rollback()
+
+
 def test_drift_audit_log_details(dev_db_session: Session) -> None:
     """Exact-match verification detects tampered audit log details."""
     merchant = dev_db_session.execute(select(Merchant).where(Merchant.name == CANONICAL_MERCHANT_NAME)).scalar_one()

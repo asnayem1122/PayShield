@@ -50,6 +50,12 @@ void main() {
       // Malformed string
       expect(() => Money.fromDecimalString('abc'), throwsA(isA<FormatException>()));
 
+      // Leading, trailing, and internal whitespace (must not be silently trimmed)
+      expect(() => Money.fromDecimalString(' 1250.00'), throwsA(isA<FormatException>()));
+      expect(() => Money.fromDecimalString('1250.00 '), throwsA(isA<FormatException>()));
+      expect(() => Money.fromDecimalString(' 1250.00 '), throwsA(isA<FormatException>()));
+      expect(() => Money.fromDecimalString('12 50.00'), throwsA(isA<FormatException>()));
+
       // More than two decimal places
       expect(() => Money.fromDecimalString('12.345'), throwsA(isA<FormatException>()));
 
@@ -61,6 +67,18 @@ void main() {
 
       // More than ten integer digits (exceeds NUMERIC(12, 2) max)
       expect(() => Money.fromDecimalString('10000000000.00'), throwsA(isA<FormatException>()));
+    });
+
+    test('Direct out-of-range minor units throws ArgumentError at runtime', () {
+      // Values outside PostgreSQL NUMERIC(12, 2) bounds must throw ArgumentError at runtime
+      expect(() => Money(1000000000000), throwsA(isA<ArgumentError>()));
+      expect(() => Money(-1000000000000), throwsA(isA<ArgumentError>()));
+      expect(() => Money.fromMinorUnits(999999999999999), throwsA(isA<ArgumentError>()));
+
+      // Money.zero and boundary values must succeed
+      expect(Money.zero.minorUnits, equals(0));
+      expect(Money(Money.maxMinorUnits).minorUnits, equals(999999999999));
+      expect(Money(Money.minMinorUnits).minorUnits, equals(-999999999999));
     });
 
     test('Repeated addition preserves exact integer minor units without floating-point error', () {
@@ -180,6 +198,52 @@ void main() {
         ),
         throwsA(isA<ArgumentError>()),
       );
+    });
+
+    test('Transaction.fromJson strictly rejects whitespace in wire amount', () {
+      final leadingWhitespace = {
+        'reference': 'tx_ws_1',
+        'amount': ' 1500.00',
+      };
+      expect(() => Transaction.fromJson(leadingWhitespace), throwsA(isA<FormatException>()));
+
+      final trailingWhitespace = {
+        'reference': 'tx_ws_2',
+        'amount': '1500.00 ',
+      };
+      expect(() => Transaction.fromJson(trailingWhitespace), throwsA(isA<FormatException>()));
+
+      final internalWhitespace = {
+        'reference': 'tx_ws_3',
+        'amount': '15 00.00',
+      };
+      expect(() => Transaction.fromJson(internalWhitespace), throwsA(isA<FormatException>()));
+    });
+
+    test('Transaction.copyWith uses strongly typed Money? amount', () {
+      final original = Transaction(
+        id: 'tx_copy_test',
+        amount: Money.fromDecimalString('1500.00'),
+        currency: 'BDT',
+        merchantName: 'PayShield Demo Merchant',
+        merchantCategory: 'Retail',
+        riskScore: 25,
+        riskFactors: const ['NEW_DEVICE'],
+        deviceModel: 'Test Device',
+        isNewDevice: true,
+        location: 'Dhaka',
+        transactionsLastHour: 1,
+        previousChargebacks: 0,
+        timestamp: DateTime.parse('2026-11-04T00:00:00.000Z'),
+      );
+
+      final updated = original.copyWith(amount: Money.fromDecimalString('3000.00'));
+      expect(updated.amount.toDecimalString(), equals('3000.00'));
+      expect(updated.amount.minorUnits, equals(300000));
+      expect(updated.id, equals(original.id));
+
+      final unchanged = original.copyWith();
+      expect(unchanged.amount, equals(original.amount));
     });
 
     test('Transaction decimal serialization round trip', () {

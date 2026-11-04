@@ -91,21 +91,22 @@ python -m scripts.seed_demo_data --recover-partial
 
 #### Safe Recovery Boundary & Invariants:
 1. **Safety Boundary Checks (P1 Invariant)**:
-   - **Runtime Risk Assessments**: Refuses deletion and aborts with atomic rollback if any canonical transaction has multiple risk assessments, or any assessment with `scoring_method != 'CANONICAL_SEED'`. Runtime assessments produced by dynamic scoring engines must never be deleted by seed recovery.
-   - **Runtime Transaction Audit Logs**: Refuses deletion and rolls back if any non-seed runtime audit logs reference canonical transactions (`AuditLog.idempotency_key NOT IN EXACT_AUDIT_KEYS`).
-   - **Runtime Merchant Audit Logs**: Refuses deletion and rolls back if any non-seed runtime audit logs reference the canonical merchant.
+   - **Risk Assessment Ownership Verification**: Refuses deletion and aborts with atomic rollback if any canonical transaction has multiple risk assessments, or any assessment that deviates from the canonical seed specification (verifying `scoring_method == 'CANONICAL_SEED'`, `policy_version == '1.0.0'`, `base_score is None`, `raw_score is None`, `is_score_clamped is None`, expected `risk_score`, `risk_level`, `recommended_action`, `risk_factors`, empty `feature_contributions`, and exact UTC `created_at`). Runtime or modified assessments must never be deleted by recovery.
+   - **Runtime Transaction Audit Logs (with NULL Key Protection)**: Refuses deletion and rolls back if any non-seed runtime audit logs reference canonical transactions (`or_(AuditLog.idempotency_key.is_(None), AuditLog.idempotency_key.not_in(EXACT_AUDIT_KEYS))`). In SQL, comparisons involving `NULL` evaluate to `UNKNOWN`; explicit `IS NULL` checks prevent unkeyed runtime events from escaping recovery detection.
+   - **Runtime Merchant Audit Logs (with NULL Key Protection)**: Refuses deletion and rolls back if any non-seed runtime audit logs reference the canonical merchant (`or_(AuditLog.idempotency_key.is_(None), AuditLog.idempotency_key != CANONICAL_MERCHANT_AUDIT_KEY)`).
    - **Active Human Workflow Activity**: Refuses deletion and rolls back if any analyst cases have active human workflow modifications (`case_status != 'OPEN'`, or non-null `assigned_analyst`, `resolution_note`, or `resolved_at`).
 2. **Explicit Key Deletions**:
    - Deletions are strictly bounded to enumerated canonical primary keys (`CANONICAL_REFERENCES`) and exact audit keys (`EXACT_AUDIT_KEYS`).
    - Wildcard deletions (e.g. `LIKE 'canonical_seeded:%'`) are strictly prohibited.
-3. **Merchant Audit Log Invariant**:
-   - The merchant audit log (`canonical_seeded:merchant:pay_shield_demo`) is reconciled and guaranteed to exist even when the `merchants` row already pre-exists.
+3. **Merchant Timestamp & Audit Log Invariants**:
+   - Both `merchant.created_at` and `merchant.updated_at` are verified against `CANONICAL_MERCHANT_TIMESTAMP` (`2026-11-04T00:00:00Z`).
+   - The merchant audit log (`canonical_seeded:merchant:pay_shield_demo`) is reconciled and guaranteed to exist with timestamp synchronized to `CANONICAL_MERCHANT_TIMESTAMP`.
    - Recovery always yields exactly 176 canonical audit logs.
 4. **All-or-Nothing Transaction Boundary**:
    - Deletion, re-insertion, and final field-by-field verification execute within a single atomic database transaction. If any validation fails, the entire recovery transaction is rolled back.
 
 ### Automated Recovery Test Suite:
-Continuous verification of recovery and idempotency is provided in `backend/tests/test_seed_recovery.py` across 10 distinct scenarios:
+Continuous verification of recovery and idempotency is provided in `backend/tests/test_seed_recovery.py` across 18 distinct scenarios:
 - **Scenario 1 (Empty State)**: Clean database seeds to 175 tx, 175 assessments, 14 cases, 176 audit logs.
 - **Scenario 2 (Fully Seeded State)**: Idempotent run with `recover_partial=False` detects 175 records, verifies all 5 entity sets, and returns `VERIFIED_EXISTING` without mutation.
 - **Scenario 3 (Partial State)**: Incomplete dataset (125/175) fails standard run with `PartialSeedAbortedError` and recovers cleanly with `--recover-partial`.
@@ -116,3 +117,11 @@ Continuous verification of recovery and idempotency is provided in `backend/test
 - **Scenario 8 (Unexpected Merchant Audit Dependency Block)**: Non-seed audit log attached to merchant blocks recovery.
 - **Scenario 9 (Atomic Rollback Guarantee)**: When recovery safety boundary triggers, 0 records are deleted due to atomic rollback.
 - **Scenario 10 (Successful Recovery Exact Counts)**: Successful recovery restores exactly 1 merchant, 175 tx, 175 ra, 14 cases, 176 audit logs.
+- **Regression 11 (Transaction Audit with NULL Key)**: Explicitly tests that an audit log with `idempotency_key = NULL` referencing a canonical transaction blocks recovery.
+- **Regression 12 (Merchant Audit with NULL Key)**: Explicitly tests that an audit log with `idempotency_key = NULL` referencing the merchant blocks recovery.
+- **Regression 13 (Immutability of Rows on Abort)**: Proves original transaction IDs, audit keys, and rows remain untouched after failed recovery.
+- **Regression 14 (Canonical Assessment Unexpected raw_score)**: Assessment with non-null `raw_score` blocks recovery.
+- **Regression 15 (Canonical Assessment Unexpected is_score_clamped)**: Assessment with non-null `is_score_clamped` blocks recovery.
+- **Regression 16 (Canonical Assessment Modified feature_contributions)**: Assessment with non-empty `feature_contributions` blocks recovery.
+- **Regression 17 (Canonical Assessment Modified risk_factors)**: Assessment with modified `risk_factors` blocks recovery.
+- **Regression 18 (Canonical Assessment Altered Score)**: Assessment with altered `risk_score` blocks recovery.

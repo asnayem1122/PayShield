@@ -18,9 +18,12 @@ During the final audit and corrective remediation of Milestone 2 Phase 2, six co
 | **D1** | **Unprotected Seed Recovery Boundary Against Runtime Risk Assessments**: Prior recovery logic did not inspect or protect runtime-generated `RiskAssessment` records (`HEURISTIC_RULES_V1`). A recovery run could have deleted runtime risk assessments attached to canonical transactions. | **P1 (Critical)** | Implemented `assert_safe_recovery_boundary()` inspecting every risk assessment linked to canonical transactions. Any non-canonical assessment (`scoring_method != 'CANONICAL_SEED'`), multiple assessments, or runtime metadata aborts recovery with immediate atomic rollback. | **Implemented & Tested** |
 | **D2** | **Loose Flutter Money Contract**: `Money` class accepted numeric inputs, lacked bounds checking for `NUMERIC(12, 2)`, lacked strict regex enforcement, and permitted zero/negative transaction amounts during deserialization. | **P1 (Critical)** | Rewrote `Money` to enforce integer minor units with strict 2-decimal string regex (`^\d{1,10}\.\d{2}$`). Strictly rejects raw JSON numbers, non-string amounts, missing fields, zero amounts, and negative amounts in `Transaction.fromJson` and constructor. | **Implemented & Tested** |
 | **D3** | **Altered Migration History in Migration 0001**: Commit `81f8dbe` retroactively modified `backend/alembic/versions/0001_initial_schema.py` to revoke `assigned_analyst` UPDATE privileges. Retroactive changes do not apply to already-migrated databases. | **P2 (High)** | Restored `0001_initial_schema.py` to its original historical grant. Implemented forward migration `0002_revoke_assigned_analyst_update.py` (`revision = "0002_revoke_analyst_update"`, 26 chars $\le 32$) with reversible downgrade. | **Implemented & Tested** |
-| **D4** | **Incomplete Seed Field Verification & Timestamp Drift**: Canonical seed verification previously checked key attributes (amount, score, status) but skipped several metadata columns (UUID types, JSONB feature contributions, UTC timestamps). Local vs UTC date interpretations between Dart and Python caused potential drift. | **P2 (Medium)** | Standardized canonical fixture timestamps to explicit UTC instants (`DateTime.utc(2026, 11, 4, 0, 0, 0)` in Dart and timezone-aware UTC datetime in Python). Implemented column-by-column verification across all 5 entities and added `--verify-only` CLI flag. | **Implemented & Tested** |
+| **D4** | **Incomplete Seed Field Verification & Timestamp Drift**: Canonical seed verification previously checked key attributes (amount, score, status) but skipped several metadata columns (UUID types, JSONB feature contributions, UTC timestamps). Local vs UTC date interpretations between Dart and Python caused potential drift. | **P2 (Medium)** | Standardized canonical fixture timestamps to explicit UTC instants (`DateTime.utc(2026, 11, 4, 0, 0, 0)` in Dart and timezone-aware UTC datetime in Python). Implemented column-by-column verification across all 5 entities and added `--verify-only` CLI flag. Verified merchant `created_at` and `updated_at` down to the second against canonical UTC constants. | **Implemented & Tested** |
 | **D5** | **Merchant Identity Discrepancy ("Shadhin Pay" vs "PayShield Demo Merchant")**: Documentation and repository docstring referenced "Shadhin Pay" while the canonical database model standardized on "PayShield Demo Merchant". | **P2 (Low)** | Standardized identity across all documentation (`CANONICAL_SEED.md`, `DATABASE_SCHEMA.md`), repository code (`merchant_repository.py`), and test suites to `PayShield Demo Merchant`. | **Implemented & Tested** |
 | **D6** | **Unsafe Migration Testing Risk**: Migration tests previously lacked guards ensuring downgrade and upgrade cycles run strictly against a designated disposable database. | **P2 (Medium)** | Added `assert_disposable_migration_database` safety guard in `backend/tests/test_migrations.py` rejecting any execution unless database is exactly `payshield_migration_test`. | **Implemented & Tested** |
+| **D7** | **Nullable Idempotency Key Leak in Recovery**: `AuditLog.idempotency_key` is nullable. SQL `NOT IN` with NULL evaluates to `UNKNOWN`, allowing unkeyed runtime audit logs to bypass detection. | **P1 (Critical)** | Applied `or_(idempotency_key.is_(None), idempotency_key.not_in(...))` for transaction and merchant audit checks. Unkeyed runtime audit records now strictly abort recovery. | **Implemented & Tested** |
+| **D8** | **Risk Assessment Ownership Verification**: Broad deletion conditions could potentially delete modified canonical assessments. | **P1 (Critical)** | Hardened `assert_safe_recovery_boundary()` to verify every property (`scoring_method`, `policy_version`, `base_score is None`, `raw_score is None`, `is_score_clamped is None`, scores, levels, actions, factors, empty contributions, created_at). | **Implemented & Tested** |
+| **D9** | **Assertion-Only Release Mode Money Risk & Wire Whitespace**: Dart `assert()` is stripped in release builds. Wire parser silently trimmed whitespace. | **P2 (High)** | Replaced `assert()` with runtime `ArgumentError` checks in `Money(this.minorUnits)` and `Money.fromMinorUnits()`. Enforced strict `^[0-9]{1,10}\.[0-9]{2}$` wire regex without `.trim()`, rejecting whitespace, negative amounts, and non-strings. Typed `Transaction.copyWith(Money? amount)`. | **Implemented & Tested** |
 
 ---
 
@@ -247,7 +250,7 @@ Verified via `backend/scripts/verify_canonical_fixture.py`:
 
 Full pytest execution across all backend test modules:
 ```
-======================= 84 passed, 1 warning in 23.49s ========================
+======================= 94 passed, 1 warning in 27.13s ========================
 ```
 - `test_api_analyst_cases.py`: 3/3 passed
 - `test_api_dashboard.py`: 3/3 passed
@@ -260,8 +263,8 @@ Full pytest execution across all backend test modules:
 - `test_permissions_phase2.py`: 18/18 passed
 - `test_readiness.py`: 3/3 passed
 - `test_risk_scoring.py`: 5/5 passed
-- `test_seed_recovery.py`: 10/10 passed
-- `test_seed_verification.py`: 12/12 passed
+- `test_seed_recovery.py`: 18/18 passed (NULL audit keys, exact assessment ownership, atomic rollback)
+- `test_seed_verification.py`: 14/14 passed (merchant timestamps, transaction timestamps, amount/score drift)
 
 ---
 
@@ -271,15 +274,15 @@ Full pytest execution across all backend test modules:
 ```
 $ cd mobile; flutter analyze
 Analyzing mobile...
-No issues found! (ran in 1.7s)
+No issues found! (ran in 1.9s)
 ```
 
 ### Unit & Widget Test Suite:
 ```
 $ cd mobile; flutter test
-00:02 +35: All tests passed!
+00:02 +38: All tests passed!
 ```
-- `api_client_and_integration_test.dart`: 11/11 passed (Money parsing, wire contract, string validation, float rejection, bounds checks)
+- `api_client_and_integration_test.dart`: 14/14 passed (Money parsing, wire contract, string validation, float rejection, bounds checks, whitespace rejection, copyWith typing)
 - `risk_constants_and_data_test.dart`: 10/10 passed (Canonical 175 counts, unique references, exact financial volumes, tx_app_1157)
 - `theme_test.dart`: 7/7 passed (WCAG AA contrast ratios, theme persistence)
 - `screen_layout_test.dart`: 4/4 passed (Compact 320x568 dp screens, 1.5x text scaling, accessibility semantics)

@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 from typing import Any
 from uuid import UUID
-from sqlalchemy import String, create_engine, delete, func, select
+from sqlalchemy import String, create_engine, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 # Ensure backend root is on sys.path
@@ -37,6 +37,7 @@ from scripts.verify_canonical_fixture import (
 CANONICAL_MERCHANT_NAME = "PayShield Demo Merchant"
 CANONICAL_MERCHANT_CATEGORY = "Retail"
 CANONICAL_MERCHANT_AUDIT_KEY = "canonical_seeded:merchant:pay_shield_demo"
+CANONICAL_MERCHANT_TIMESTAMP = datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc)
 
 # Build canonical reference inventory
 CANONICAL_REFERENCES: list[str] = (
@@ -166,10 +167,14 @@ def verify_existing_canonical_seed(
         raise SeedIntegrityError(f"Merchant category drift: {merchant.category} != {CANONICAL_MERCHANT_CATEGORY}")
     if merchant.status != "ACTIVE":
         raise SeedIntegrityError(f"Merchant status drift: {merchant.status} != ACTIVE")
-    if merchant.created_at is None or not isinstance(merchant.created_at, datetime):
-        raise SeedIntegrityError("Merchant created_at is missing or invalid timestamp")
-    if merchant.updated_at is None or not isinstance(merchant.updated_at, datetime):
-        raise SeedIntegrityError("Merchant updated_at is missing or invalid timestamp")
+    if not _compare_datetimes(merchant.created_at, CANONICAL_MERCHANT_TIMESTAMP):
+        raise SeedIntegrityError(
+            f"Merchant created_at timestamp drift: {merchant.created_at} != {CANONICAL_MERCHANT_TIMESTAMP}"
+        )
+    if not _compare_datetimes(merchant.updated_at, CANONICAL_MERCHANT_TIMESTAMP):
+        raise SeedIntegrityError(
+            f"Merchant updated_at timestamp drift: {merchant.updated_at} != {CANONICAL_MERCHANT_TIMESTAMP}"
+        )
 
     # Verify Merchant Audit Log
     merchant_log = session.execute(
@@ -192,9 +197,9 @@ def verify_existing_canonical_seed(
     expected_merchant_details = {"merchant_name": merchant.name, "category": merchant.category}
     if merchant_log.details != expected_merchant_details:
         raise SeedIntegrityError(f"Merchant audit log details drift: {merchant_log.details}")
-    if not _compare_datetimes(merchant_log.created_at, merchant.created_at):
+    if not _compare_datetimes(merchant_log.created_at, CANONICAL_MERCHANT_TIMESTAMP):
         raise SeedIntegrityError(
-            f"Merchant audit log created_at timestamp drift: {merchant_log.created_at} != {merchant.created_at}"
+            f"Merchant audit log created_at timestamp drift: {merchant_log.created_at} != {CANONICAL_MERCHANT_TIMESTAMP}"
         )
 
     # 2. Verify Transactions (All 175)
@@ -353,11 +358,23 @@ def verify_existing_canonical_seed(
             raise SeedIntegrityError(f"Audit log {expected_key} created_at timestamp drift: {l.created_at} != {expected['created_at']}")
 
 
-def assert_safe_recovery_boundary(session: Session) -> None:
+def assert_safe_recovery_boundary(
+    session: Session, spec_map: dict[str, dict[str, Any]] | None = None
+) -> None:
     """Verify that canonical seed records have no external runtime dependencies before deletion."""
+    if spec_map is None:
+        specs = get_canonical_transaction_specs()
+        spec_map = {s["reference"]: s for s in specs}
+
     canonical_tx_subquery = select(Transaction.id).where(Transaction.reference.in_(CANONICAL_REFERENCES))
 
-    # Check 1: Runtime-generated risk assessments attached to canonical transactions
+    # Build mapping from Transaction.id to reference
+    existing_canonical_txs = session.execute(
+        select(Transaction.id, Transaction.reference).where(Transaction.reference.in_(CANONICAL_REFERENCES))
+    ).all()
+    tx_id_to_ref: dict[UUID, str] = {row[0]: row[1] for row in existing_canonical_txs}
+
+    # Check 1: Rigorous ownership verification of RiskAssessments attached to canonical transactions
     assessments = session.execute(
         select(RiskAssessment).where(RiskAssessment.transaction_id.in_(canonical_tx_subquery))
     ).scalars().all()
@@ -373,25 +390,74 @@ def assert_safe_recovery_boundary(session: Session) -> None:
                 "Refusing to delete records with unexpected multiple assessments."
             )
         ra = ra_list[0]
+        tx_ref = tx_id_to_ref.get(tx_id)
+        if not tx_ref or tx_ref not in spec_map:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment {ra.id} linked to unrecognized transaction ID {tx_id}."
+            )
+        expected = spec_map[tx_ref]
+
+        if ra.transaction_id != tx_id:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment {ra.id} transaction_id linkage drift."
+            )
         if ra.scoring_method != "CANONICAL_SEED":
             raise SeedIntegrityError(
-                f"Recovery aborted: Runtime-generated risk assessment detected (scoring_method={ra.scoring_method}). "
-                "Refusing to delete records with external runtime assessment dependencies."
+                f"Recovery aborted: Runtime-generated risk assessment detected for {tx_ref} "
+                f"(scoring_method='{ra.scoring_method}'). Refusing to delete external runtime assessments."
             )
-        if ra.policy_version != "1.0.0" or ra.feature_contributions != [] or ra.base_score is not None:
+        if ra.policy_version != "1.0.0":
             raise SeedIntegrityError(
-                f"Recovery aborted: Assessment has runtime metadata (policy={ra.policy_version}, contributions={ra.feature_contributions}). "
-                "Refusing to delete records with runtime modifications."
+                f"Recovery aborted: Risk assessment for {tx_ref} has unexpected policy_version='{ra.policy_version}'."
+            )
+        if ra.base_score is not None:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} has unexpected non-null base_score={ra.base_score}."
+            )
+        if ra.raw_score is not None:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} has unexpected non-null raw_score={ra.raw_score}."
+            )
+        if ra.is_score_clamped is not None:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} has unexpected non-null is_score_clamped={ra.is_score_clamped}."
+            )
+        if ra.risk_score != expected["risk_score"]:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} risk_score drift: {ra.risk_score} != {expected['risk_score']}."
+            )
+        if ra.risk_level != expected["risk_level"]:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} risk_level drift: {ra.risk_level} != {expected['risk_level']}."
+            )
+        if ra.recommended_action != expected["recommended_action"]:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} recommended_action drift: {ra.recommended_action} != {expected['recommended_action']}."
+            )
+        if ra.risk_factors != expected["risk_factors"]:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} risk_factors drift: {ra.risk_factors} != {expected['risk_factors']}."
+            )
+        if ra.feature_contributions != []:
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} non-empty feature_contributions: {ra.feature_contributions}."
+            )
+        if not _compare_datetimes(ra.created_at, expected["created_at"]):
+            raise SeedIntegrityError(
+                f"Recovery aborted: Risk assessment for {tx_ref} created_at timestamp drift: {ra.created_at} != {expected['created_at']}."
             )
 
-    # Check 2: Runtime audit logs referencing canonical transactions
+    # Check 2: Runtime audit logs referencing canonical transactions (including NULL idempotency_key)
     runtime_audit_deps = session.execute(
         select(AuditLog).where(
             AuditLog.entity_type == "transaction",
             AuditLog.entity_id.in_(
                 select(func.cast(Transaction.id, String)).where(Transaction.reference.in_(CANONICAL_REFERENCES))
             ),
-            AuditLog.idempotency_key.not_in(EXACT_AUDIT_KEYS),
+            or_(
+                AuditLog.idempotency_key.is_(None),
+                AuditLog.idempotency_key.not_in(EXACT_AUDIT_KEYS),
+            ),
         )
     ).scalars().all()
     if runtime_audit_deps:
@@ -400,13 +466,16 @@ def assert_safe_recovery_boundary(session: Session) -> None:
             "Refusing to delete records with external runtime dependencies."
         )
 
-    # Check 3: Runtime audit logs referencing canonical merchant
+    # Check 3: Runtime audit logs referencing canonical merchant (including NULL idempotency_key)
     merchant_subquery = select(func.cast(Merchant.id, String)).where(Merchant.name == CANONICAL_MERCHANT_NAME)
     runtime_merchant_audits = session.execute(
         select(AuditLog).where(
             AuditLog.entity_type == "merchant",
             AuditLog.entity_id.in_(merchant_subquery),
-            AuditLog.idempotency_key != CANONICAL_MERCHANT_AUDIT_KEY,
+            or_(
+                AuditLog.idempotency_key.is_(None),
+                AuditLog.idempotency_key != CANONICAL_MERCHANT_AUDIT_KEY,
+            ),
         )
     ).scalars().all()
     if runtime_merchant_audits:
@@ -488,7 +557,7 @@ def seed_canonical_data(
         # Execute Safe Recovery if required
         if recover_partial or existing_count > 0 or merchant is not None:
             print("Checking safety boundary for canonical records...")
-            assert_safe_recovery_boundary(session)
+            assert_safe_recovery_boundary(session, spec_map)
 
             print("Deleting explicitly enumerated seed-owned records...")
             # 1. Delete seed-owned audit logs (explicit keys only)
@@ -524,8 +593,8 @@ def seed_canonical_data(
                 name=CANONICAL_MERCHANT_NAME,
                 category=CANONICAL_MERCHANT_CATEGORY,
                 status="ACTIVE",
-                created_at=datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc),
-                updated_at=datetime(2026, 11, 4, 0, 0, 0, tzinfo=timezone.utc),
+                created_at=CANONICAL_MERCHANT_TIMESTAMP,
+                updated_at=CANONICAL_MERCHANT_TIMESTAMP,
             )
             session.add(merchant)
             session.flush()
@@ -544,7 +613,7 @@ def seed_canonical_data(
                     entity_id=merchant.id,
                     idempotency_key=CANONICAL_MERCHANT_AUDIT_KEY,
                     details={"merchant_name": merchant.name, "category": merchant.category},
-                    created_at=merchant.created_at,
+                    created_at=CANONICAL_MERCHANT_TIMESTAMP,
                 )
             )
             session.flush()

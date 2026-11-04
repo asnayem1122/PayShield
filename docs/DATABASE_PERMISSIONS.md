@@ -87,3 +87,14 @@ Every rule in this specification is continuously verified by `backend/tests/test
 - `has_column_privilege('payshield_app', 'transactions', 'amount', 'UPDATE') = False`.
 - `has_column_privilege('payshield_app', 'analyst_cases', 'trigger_reason', 'UPDATE') = False`.
 - `DELETE` and `TRUNCATE` evaluate to `False` across all 5 tables.
+
+---
+
+## 6. Audit Trail Immutability & NULL-Key Safety
+
+- **Append-Only Ledger**: `audit_logs` permits only `SELECT` and `INSERT` for `payshield_app`. `UPDATE`, `DELETE`, and `TRUNCATE` privileges are denied at the database role level.
+- **Nullable Idempotency Token Protection**: In SQL standard semantics, `NULL NOT IN (...)` evaluates to `UNKNOWN` (falsy), which would allow audit records with `idempotency_key IS NULL` to bypass recovery filters. The recovery boundary explicitly guards against unkeyed runtime audit records with:
+  ```sql
+  (idempotency_key IS NULL OR idempotency_key NOT IN (...))
+  ```
+  ensuring unkeyed runtime audit events cannot escape detection or be silently removed.

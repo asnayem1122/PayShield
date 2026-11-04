@@ -9,38 +9,46 @@ import 'package:intl/intl.dart';
 class Money implements Comparable<Money> {
   final int minorUnits;
 
-  static final RegExp _decimalPattern = RegExp(r'^-?\d{1,10}\.\d{2}$');
+  static final RegExp _decimalPattern = RegExp(r'^-?[0-9]{1,10}\.[0-9]{2}$');
 
   /// Maximum minor units representing PostgreSQL NUMERIC(12, 2) max: 9,999,999,999.99 BDT
   static const int maxMinorUnits = 999999999999;
   static const int minMinorUnits = -999999999999;
 
-  const Money(this.minorUnits)
-      : assert(
-          minorUnits >= minMinorUnits && minorUnits <= maxMinorUnits,
-          'Money minorUnits exceeds NUMERIC(12, 2) bounds: $minorUnits',
-        );
+  Money(this.minorUnits) {
+    _validateMinorUnits(minorUnits);
+  }
 
-  const Money.fromMinorUnits(this.minorUnits)
-      : assert(
-          minorUnits >= minMinorUnits && minorUnits <= maxMinorUnits,
-          'Money minorUnits exceeds NUMERIC(12, 2) bounds: $minorUnits',
-        );
+  const Money._internal(this.minorUnits);
 
-  static const Money zero = Money(0);
+  factory Money.fromMinorUnits(int minorUnits) {
+    _validateMinorUnits(minorUnits);
+    return Money(minorUnits);
+  }
+
+  static const Money zero = Money._internal(0);
+
+  static void _validateMinorUnits(int units) {
+    if (units < minMinorUnits || units > maxMinorUnits) {
+      throw ArgumentError.value(
+        units,
+        'minorUnits',
+        'Money minorUnits exceeds NUMERIC(12, 2) bounds [$minMinorUnits, $maxMinorUnits]: $units',
+      );
+    }
+  }
 
   /// Parse from strict 2-decimal string (e.g. "1250.00", "9999999999.99") without floating-point conversion.
-  /// Rejects strings that do not have exactly 2 decimal places, exceed 10 integer digits, or contain invalid characters.
+  /// Rejects strings that do not have exactly 2 decimal places, exceed 10 integer digits, contain whitespace, or contain invalid characters.
   factory Money.fromDecimalString(String value) {
-    final trimmed = value.trim();
-    if (!_decimalPattern.hasMatch(trimmed)) {
+    if (!_decimalPattern.hasMatch(value)) {
       throw FormatException(
         'Invalid decimal money format: "$value". Expected 1-10 integer digits and exactly 2 decimal places (e.g., "1250.00").',
       );
     }
 
-    final isNegative = trimmed.startsWith('-');
-    final clean = isNegative ? trimmed.substring(1) : trimmed;
+    final isNegative = value.startsWith('-');
+    final clean = isNegative ? value.substring(1) : value;
 
     final parts = clean.split('.');
     final major = int.parse(parts[0]);

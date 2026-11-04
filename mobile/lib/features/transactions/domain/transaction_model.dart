@@ -48,6 +48,8 @@ class Transaction {
   RiskLevel get riskLevel => AppRiskConstants.getLevelForScore(riskScore);
   RiskAction get recommendedAction => AppRiskConstants.getActionForScore(riskScore);
 
+  static final RegExp transactionWireAmountPattern = RegExp(r'^[0-9]{1,10}\.[0-9]{2}$');
+
   factory Transaction.fromJson(Map<String, dynamic> json) {
     final ref = (json['reference'] ?? json['id'] ?? '').toString();
     if (!json.containsKey('amount') || json['amount'] == null) {
@@ -57,6 +59,11 @@ class Transaction {
     if (rawAmount is! String) {
       throw FormatException(
         'Transaction "amount" must be a JSON string, got ${rawAmount.runtimeType}: $rawAmount',
+      );
+    }
+    if (!transactionWireAmountPattern.hasMatch(rawAmount)) {
+      throw FormatException(
+        'Transaction amount wire format invalid: "$rawAmount". Must match ^[0-9]{1,10}\\.[0-9]{2}\$ without whitespace, negative signs, or scientific notation.',
       );
     }
     final Money parsedAmount = Money.fromDecimalString(rawAmount);
@@ -131,7 +138,7 @@ class Transaction {
 
   Transaction copyWith({
     String? id,
-    dynamic amount,
+    Money? amount,
     String? currency,
     String? merchantName,
     String? merchantCategory,

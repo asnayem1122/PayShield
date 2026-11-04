@@ -14,10 +14,11 @@ Verifies all ten required recovery scenarios against PostgreSQL (payshield_test)
 10. Successful recovery restores exact canonical counts across all 5 layers (176 audit logs).
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 import pytest
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -292,3 +293,207 @@ def test_scenario_10_successful_recovery_exact_counts(test_db_session: Session):
     assert test_db_session.execute(select(func.count(RiskAssessment.id))).scalar() == 175
     assert test_db_session.execute(select(func.count(AnalystCase.id))).scalar() == 14
     assert test_db_session.execute(select(func.count(AuditLog.id))).scalar() == 176
+
+
+# -----------------------------------------------------------------------------
+# Section 1: NULL Idempotency Key Regression Tests
+# -----------------------------------------------------------------------------
+
+
+def test_runtime_tx_audit_with_null_key_blocks_recovery(test_db_session: Session):
+    """Runtime audit log with NULL idempotency key referencing canonical tx blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+
+    runtime_log = AuditLog(
+        actor_type="ANALYST",
+        actor_id="analyst_lead_01",
+        action="TRANSACTION_MANUAL_REVIEW_TRIGGERED",
+        entity_type="transaction",
+        entity_id=tx_1001.id,
+        idempotency_key=None,  # Explicit NULL key
+        details={"note": "Manual review triggered without idempotency token"},
+    )
+    test_db_session.add(runtime_log)
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "runtime audit logs reference canonical transactions" in str(exc_info.value)
+
+
+def test_runtime_merchant_audit_with_null_key_blocks_recovery(test_db_session: Session):
+    """Runtime audit log with NULL idempotency key referencing canonical merchant blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    merchant = test_db_session.execute(select(Merchant)).scalar_one()
+
+    runtime_merchant_log = AuditLog(
+        actor_type="ADMIN",
+        actor_id="admin_01",
+        action="MERCHANT_KYC_MANUAL_VERIFIED",
+        entity_type="merchant",
+        entity_id=merchant.id,
+        idempotency_key=None,  # Explicit NULL key
+        details={"verifier": "compliance_officer_02"},
+    )
+    test_db_session.add(runtime_merchant_log)
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "runtime audit logs reference canonical merchant" in str(exc_info.value)
+
+
+def test_failed_recovery_leaves_all_rows_and_ids_unchanged(test_db_session: Session):
+    """Failed recovery guarantees original transaction IDs, audit records, and all rows remain untouched."""
+    _ensure_clean_seed(test_db_session)
+    orig_tx_ids = set(test_db_session.execute(select(Transaction.id)).scalars().all())
+    orig_audit_keys = set(test_db_session.execute(select(AuditLog.idempotency_key)).scalars().all())
+
+    # Trigger failure via NULL-key runtime audit
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+    runtime_log = AuditLog(
+        actor_type="SYSTEM",
+        actor_id="cron_monitor",
+        action="TRANSACTION_HEALTH_PROBE",
+        entity_type="transaction",
+        entity_id=tx_1001.id,
+        idempotency_key=None,
+        details={"probe": "liveness"},
+    )
+    test_db_session.add(runtime_log)
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError):
+        seed_canonical_data(test_db_session, recover_partial=True)
+
+    test_db_session.rollback()
+    # Confirm exact same transaction IDs are preserved
+    current_tx_ids = set(test_db_session.execute(select(Transaction.id)).scalars().all())
+    assert current_tx_ids == orig_tx_ids
+
+    # Confirm canonical audit logs are preserved (plus the runtime log that blocked it)
+    current_audit_keys = set(test_db_session.execute(select(AuditLog.idempotency_key)).scalars().all())
+    assert orig_audit_keys.issubset(current_audit_keys)
+
+
+# -----------------------------------------------------------------------------
+# Section 2: Strengthened RiskAssessment Ownership Regression Tests
+# -----------------------------------------------------------------------------
+
+
+@contextmanager
+def _temporarily_relax_scoring_metadata_constraint(session: Session):
+    constraint_name = "chk_risk_assessments_chk_risk_assessments_scoring_metadata"
+    session.rollback()
+    session.execute(text(f"ALTER TABLE risk_assessments DROP CONSTRAINT IF EXISTS {constraint_name}"))
+    session.commit()
+    try:
+        yield
+    finally:
+        session.rollback()
+        # Clean any non-compliant rows before restoring constraint
+        session.execute(delete(RiskAssessment))
+        session.commit()
+        session.execute(text(f"""
+            ALTER TABLE risk_assessments ADD CONSTRAINT {constraint_name} CHECK (
+                (scoring_method = 'CANONICAL_SEED' AND base_score IS NULL AND raw_score IS NULL AND is_score_clamped IS NULL)
+                OR
+                (scoring_method = 'HEURISTIC_RULES_V1' AND base_score = 10 AND raw_score >= 0 AND raw_score <= 110 AND is_score_clamped IS NOT NULL AND
+                 ((raw_score > 100 AND risk_score = 100 AND is_score_clamped = TRUE) OR (raw_score <= 100 AND risk_score = raw_score AND is_score_clamped = FALSE)))
+            )
+        """))
+        session.commit()
+
+
+def test_canonical_assessment_unexpected_raw_score_blocks_recovery(test_db_session: Session):
+    """Canonical risk assessment with non-null raw_score blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    with _temporarily_relax_scoring_metadata_constraint(test_db_session):
+        _ensure_clean_seed(test_db_session)
+        tx_1001 = test_db_session.execute(
+            select(Transaction).where(Transaction.reference == "tx_app_1001")
+        ).scalar_one()
+        ra = test_db_session.execute(
+            select(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+        ).scalar_one()
+        ra.raw_score = 50
+        test_db_session.commit()
+
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            seed_canonical_data(test_db_session, recover_partial=True)
+        assert "unexpected non-null raw_score" in str(exc_info.value)
+
+
+def test_canonical_assessment_unexpected_is_score_clamped_blocks_recovery(test_db_session: Session):
+    """Canonical risk assessment with non-null is_score_clamped blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    with _temporarily_relax_scoring_metadata_constraint(test_db_session):
+        _ensure_clean_seed(test_db_session)
+        tx_1001 = test_db_session.execute(
+            select(Transaction).where(Transaction.reference == "tx_app_1001")
+        ).scalar_one()
+        ra = test_db_session.execute(
+            select(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+        ).scalar_one()
+        ra.is_score_clamped = True
+        test_db_session.commit()
+
+        with pytest.raises(SeedIntegrityError) as exc_info:
+            seed_canonical_data(test_db_session, recover_partial=True)
+        assert "unexpected non-null is_score_clamped" in str(exc_info.value)
+
+
+def test_canonical_assessment_modified_feature_contributions_blocks_recovery(test_db_session: Session):
+    """Canonical risk assessment with modified feature contributions blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+    ra = test_db_session.execute(
+        select(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+    ).scalar_one()
+    ra.feature_contributions = [{"rule": "VELOCITY", "points": 10}]
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "non-empty feature_contributions" in str(exc_info.value)
+
+
+def test_canonical_assessment_modified_risk_factors_blocks_recovery(test_db_session: Session):
+    """Canonical risk assessment with modified risk factors blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+    ra = test_db_session.execute(
+        select(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+    ).scalar_one()
+    ra.risk_factors = ["TAMPERED_FACTOR"]
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "risk_factors drift" in str(exc_info.value)
+
+
+def test_canonical_assessment_altered_score_or_action_blocks_recovery(test_db_session: Session):
+    """Canonical risk assessment with altered score blocks recovery."""
+    _ensure_clean_seed(test_db_session)
+    tx_1001 = test_db_session.execute(
+        select(Transaction).where(Transaction.reference == "tx_app_1001")
+    ).scalar_one()
+    ra = test_db_session.execute(
+        select(RiskAssessment).where(RiskAssessment.transaction_id == tx_1001.id)
+    ).scalar_one()
+    ra.risk_score = 30  # Still LOW (0-39) to satisfy CHECK constraint, but drifts from canonical 9
+    test_db_session.commit()
+
+    with pytest.raises(SeedIntegrityError) as exc_info:
+        seed_canonical_data(test_db_session, recover_partial=True)
+    assert "risk_score drift" in str(exc_info.value)
