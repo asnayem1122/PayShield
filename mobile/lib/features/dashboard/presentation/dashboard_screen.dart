@@ -34,7 +34,7 @@ class DashboardScreen extends ConsumerWidget {
     return Scaffold(
       body: RefreshIndicator(
         onRefresh: () async {
-          // In-memory refresh
+          await ref.read(transactionsProvider.notifier).fetchFromBackend();
         },
         child: ListView(
           padding: AppSpacing.screenPadding,

@@ -44,7 +44,7 @@ def probe_table(migrator_engine) -> Generator[str, None, None]:
         conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
         conn.execute(
             text(
-                f"CREATE TABLE {table_name} (id serial primary key, note text, counter int)"
+                f"CREATE TABLE {table_name} (id uuid primary key default gen_random_uuid(), note text, counter int)"
             )
         )
         conn.execute(
@@ -84,10 +84,9 @@ def test_default_privileges_catalog_entry(app_engine) -> None:
         assert "d" not in priv_str, "DELETE ('d') must NOT be present in table default privileges"
         assert "D" not in priv_str, "TRUNCATE ('D') must NOT be present in table default privileges"
 
-        # Sequence default privileges
-        assert "S" in acl_map, "Expected default privileges on sequences ('S')"
-        seq_acl = acl_map["S"]
-        assert "payshield_app=rU/payshield_migrator" in seq_acl
+        # Sequence default privileges (UUID PKs use gen_random_uuid(), no sequences needed)
+        seq_acl = acl_map.get("S", "")
+        assert "payshield_app" not in seq_acl, "Sequence privileges should NOT be granted to payshield_app"
 
 
 def test_test_database_default_privileges_catalog_entry() -> None:
@@ -116,9 +115,8 @@ def test_test_database_default_privileges_catalog_entry() -> None:
             assert "d" not in priv_str, "DELETE must not be in default privileges in payshield_test"
             assert "D" not in priv_str, "TRUNCATE must not be in default privileges in payshield_test"
 
-            assert "S" in acl_map, "Expected default privileges on sequences in payshield_test"
-            seq_acl = acl_map["S"]
-            assert "payshield_app=rU/payshield_migrator" in seq_acl
+            seq_acl = acl_map.get("S", "")
+            assert "payshield_app" not in seq_acl, "Sequence privileges should NOT be granted to payshield_app in payshield_test"
     finally:
         test_engine.dispose()
 

@@ -210,14 +210,18 @@ class _TransactionHistoryScreenState extends ConsumerState<TransactionHistoryScr
                         ],
                       ),
                     )
-                  : ListView.separated(
-                      padding: AppSpacing.screenPadding,
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.xs),
-                      itemBuilder: (context, index) {
-                        final tx = filtered[index];
-                        return _buildTile(context, tx, colors);
-                      },
+                  : RefreshIndicator(
+                      onRefresh: () => ref.read(transactionsProvider.notifier).fetchFromBackend(),
+                      child: ListView.separated(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: AppSpacing.screenPadding,
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.xs),
+                        itemBuilder: (context, index) {
+                          final tx = filtered[index];
+                          return _buildTile(context, tx, colors);
+                        },
+                      ),
                     ),
             ),
           ],

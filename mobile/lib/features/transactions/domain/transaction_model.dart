@@ -42,6 +42,76 @@ class Transaction {
   RiskLevel get riskLevel => AppRiskConstants.getLevelForScore(riskScore);
   RiskAction get recommendedAction => AppRiskConstants.getActionForScore(riskScore);
 
+  factory Transaction.fromJson(Map<String, dynamic> json) {
+    final ref = (json['reference'] ?? json['id'] ?? '').toString();
+    final rawAmount = json['amount'];
+    final parsedAmount = rawAmount is num
+        ? rawAmount.toDouble()
+        : double.tryParse(rawAmount?.toString() ?? '0.0') ?? 0.0;
+
+    final score = (json['risk_score'] as num?)?.toInt() ?? 10;
+    final clampedScore = score.clamp(0, 100);
+
+    final rawFactors = json['risk_factors'];
+    List<String> factors = [];
+    if (rawFactors is List) {
+      factors = rawFactors.map((e) => e.toString()).toList();
+    }
+
+    final rawStatus = json['transaction_status']?.toString();
+    String? resolution;
+    if (rawStatus == 'BLOCKED') {
+      resolution = 'CONFIRM_FRAUD';
+    } else if (rawStatus == 'APPROVED') {
+      resolution = 'MARK_LEGITIMATE';
+    }
+
+    DateTime parsedDate = DateTime.now();
+    if (json['created_at'] != null) {
+      parsedDate = DateTime.tryParse(json['created_at'].toString()) ?? parsedDate;
+    }
+
+    return Transaction(
+      id: ref,
+      amount: parsedAmount,
+      currency: json['currency']?.toString() ?? 'BDT',
+      merchantName: json['counterparty_name']?.toString() ?? 'Shadhin Pay',
+      merchantCategory: 'Retail',
+      riskScore: clampedScore,
+      riskFactors: factors,
+      deviceModel: json['device_model']?.toString() ?? 'Mobile Client',
+      isNewDevice: json['is_new_device'] == true,
+      location: json['location_city']?.toString() ?? 'Dhaka',
+      transactionsLastHour: (json['transactions_last_hour'] as num?)?.toInt() ?? 0,
+      previousChargebacks: (json['previous_chargebacks'] as num?)?.toInt() ?? 0,
+      timestamp: parsedDate,
+      analystResolution: resolution,
+      analystNotes: json['resolution_note']?.toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'reference': id,
+      'amount': amount.toStringAsFixed(2),
+      'currency': currency,
+      'counterparty_name': merchantName,
+      'channel': 'MOBILE_APP',
+      'device_model': deviceModel,
+      'location_city': location,
+      'is_location_anomaly': false,
+      'risk_score': riskScore,
+      'risk_level': riskLevel.name.toUpperCase(),
+      'recommended_action': recommendedAction.name.toUpperCase(),
+      'transaction_status': analystResolution == 'CONFIRM_FRAUD'
+          ? 'BLOCKED'
+          : analystResolution == 'MARK_LEGITIMATE'
+              ? 'APPROVED'
+              : 'REVIEW',
+      'created_at': timestamp.toIso8601String(),
+    };
+  }
+
   Transaction copyWith({
     String? id,
     double? amount,

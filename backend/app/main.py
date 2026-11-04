@@ -1,13 +1,16 @@
 """PayShield FastAPI Application Entrypoint.
 
-Exposes liveness and readiness health endpoints.
+Exposes liveness and readiness health endpoints along with API v1 routes.
 """
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.router import api_v1_router
+from app.core.config import settings
 from app.core.database import check_database_connection, dispose_engine
 
 
@@ -20,22 +23,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="PayShield API",
-    description="Educational Fraud Risk Monitoring API",
+    description="Educational Payment Fraud-Risk Monitoring System API",
     version="0.1.0",
     lifespan=lifespan,
 )
 
+# CORS middleware for Flutter Web, Desktop, and Mobile clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def _get_health_status() -> dict[str, str]:
-    """Return API process health status.
-
-    Note: This confirms the API service process is responding (liveness probe).
-    """
+    """Return API process health status."""
     return {
         "status": "healthy",
         "app": "PayShield API",
         "version": "0.1.0",
-        "environment": "development",
+        "environment": settings.ENVIRONMENT,
     }
 
 
@@ -53,12 +62,7 @@ def health_v1() -> dict[str, str]:
 
 @app.get("/api/v1/readiness", tags=["Health"])
 def readiness_v1() -> JSONResponse:
-    """API v1 database readiness probe.
-
-    Executes a minimal SELECT 1 probe against the configured database.
-    Returns HTTP 200 when database connectivity is verified.
-    Returns HTTP 503 (RFC 9457 Problem Details) when database is unreachable.
-    """
+    """API v1 database readiness probe."""
     is_healthy, _ = check_database_connection()
     if is_healthy:
         return JSONResponse(
@@ -71,6 +75,7 @@ def readiness_v1() -> JSONResponse:
 
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        media_type="application/problem+json",
         content={
             "type": "https://payshield.internal/errors/database-unavailable",
             "title": "Service Unavailable",
@@ -78,5 +83,8 @@ def readiness_v1() -> JSONResponse:
             "detail": "Database service is unavailable",
             "instance": "/api/v1/readiness",
         },
-        media_type="application/problem+json",
     )
+
+
+# Mount API v1 router
+app.include_router(api_v1_router, prefix=settings.API_V1_STR)

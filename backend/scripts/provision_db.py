@@ -23,7 +23,7 @@ APP_PASSWORD = os.getenv(
     "POSTGRES_PASSWORD", "payshield_app_insecure_dev_password"
 )
 
-DATABASES = ["payshield_dev", "payshield_test"]
+DATABASES = ["payshield_dev", "payshield_test", "payshield_migration_test"]
 
 
 def run_provisioning() -> None:
@@ -103,10 +103,15 @@ def run_provisioning() -> None:
         db_conn_params["dbname"] = db_name
         with psycopg.connect(**db_conn_params) as db_conn:
             with db_conn.cursor() as cur:
-                # Revoke all from PUBLIC on public schema
+                # 1. Revoke all privileges from PUBLIC on database and public schema
+                cur.execute(
+                    sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(
+                        sql.Identifier(db_name)
+                    )
+                )
                 cur.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
 
-                # Connect privilege on DB
+                # 2. Grant CONNECT on database to dedicated roles
                 cur.execute(
                     sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
                         sql.Identifier(db_name), sql.Identifier(MIGRATOR_USER)
@@ -118,14 +123,14 @@ def run_provisioning() -> None:
                     )
                 )
 
-                # Migrator schema grants
+                # 3. Migrator schema grants (Full DDL schema owner)
                 cur.execute(
                     sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {}").format(
                         sql.Identifier(MIGRATOR_USER)
                     )
                 )
 
-                # App role schema grants (USAGE only, explicitly no CREATE)
+                # 4. App role schema grants (USAGE only, explicitly no CREATE)
                 cur.execute(
                     sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(
                         sql.Identifier(APP_USER)
@@ -137,8 +142,8 @@ def run_provisioning() -> None:
                     )
                 )
 
-                # Default privileges for tables and sequences created by migrator:
-                # 1. Reset any existing default privileges on tables to avoid permission drift
+                # 5. Default privileges for tables created by migrator:
+                # Reset any existing default privileges on tables to avoid permission drift
                 cur.execute(
                     sql.SQL("""
                         ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
@@ -148,11 +153,8 @@ def run_provisioning() -> None:
                     )
                 )
 
-                # 2. Grant ONLY SELECT and INSERT on future tables.
+                # Grant ONLY SELECT and INSERT on future tables.
                 # Strictly NO table-level UPDATE, DELETE, or TRUNCATE.
-                # Note: Specific column-level UPDATE on 'transactions' and 'analyst_cases',
-                # and runtime read-only lock (REVOKE INSERT) on 'merchants' are applied
-                # post-migration in Phase 2 once table catalog objects exist.
                 cur.execute(
                     sql.SQL("""
                         ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
@@ -162,11 +164,11 @@ def run_provisioning() -> None:
                     )
                 )
 
-                # 3. Grant sequence USAGE and SELECT for autoincrementing ID generation
+                # 6. Revoke sequence privileges (UUID primary keys use gen_random_uuid(), no sequences needed)
                 cur.execute(
                     sql.SQL("""
                         ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public
-                        GRANT USAGE, SELECT ON SEQUENCES TO {}
+                        REVOKE ALL ON SEQUENCES FROM {}
                     """).format(
                         sql.Identifier(MIGRATOR_USER), sql.Identifier(APP_USER)
                     )

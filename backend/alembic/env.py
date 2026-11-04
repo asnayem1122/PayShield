@@ -11,6 +11,7 @@ if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 
 from app.core.config import settings  # noqa: E402
+from app.models import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -20,9 +21,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support in Phase 2
-target_metadata = None
+# Model metadata for autogenerate and migrations
+target_metadata = Base.metadata
 
 
 def get_url() -> str:
@@ -55,9 +55,16 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
-    Uses dedicated payshield_migrator credentials from application settings.
+    Uses dedicated payshield_migrator credentials from application settings
+    or custom URL specified in Alembic Config (e.g. for testing).
     """
-    migration_url = settings.get_migration_sqlalchemy_url()
+    custom_url = config.get_main_option("sqlalchemy.url")
+    if custom_url:
+        from sqlalchemy.engine import make_url
+        migration_url = make_url(custom_url)
+    else:
+        migration_url = settings.get_migration_sqlalchemy_url()
+
     connectable = create_engine(
         migration_url,
         poolclass=pool.NullPool,
