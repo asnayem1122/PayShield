@@ -5,7 +5,7 @@ Exposes liveness and readiness health endpoints along with API v1 routes.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -36,6 +36,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Format all HTTPExceptions according to RFC 9457 Problem Details specification."""
+    title_map = {
+        400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
+        404: "Not Found",
+        405: "Method Not Allowed",
+        409: "Conflict",
+        422: "Unprocessable Entity",
+        423: "Locked",
+        500: "Internal Server Error",
+        503: "Service Unavailable",
+    }
+    title = title_map.get(exc.status_code, "HTTP Error")
+    headers = getattr(exc, "headers", None) or {}
+    return JSONResponse(
+        status_code=exc.status_code,
+        media_type="application/problem+json",
+        content={
+            "type": f"https://payshield.internal/errors/{exc.status_code}",
+            "title": title,
+            "status": exc.status_code,
+            "detail": exc.detail,
+            "instance": request.url.path,
+        },
+        headers=headers,
+    )
 
 
 def _get_health_status() -> dict[str, str]:

@@ -6,6 +6,14 @@ from app.schemas.analyst_case import (
     AnalystCaseUpdate,
 )
 from app.schemas.audit_log import AuditLogListResponse, AuditLogResponse
+from app.schemas.auth import (
+    LoginRequest,
+    ProblemDetail,
+    RefreshTokenRequest,
+    TokenResponse,
+    UserProfileResponse,
+    UserSummaryResponse,
+)
 from app.schemas.common import DecimalString, PaginationParams
 from app.schemas.dashboard import (
     DashboardSummaryResponse,
@@ -40,4 +48,10 @@ __all__ = [
     "RiskAssessmentResponse",
     "AuditLogResponse",
     "AuditLogListResponse",
+    "LoginRequest",
+    "RefreshTokenRequest",
+    "TokenResponse",
+    "UserSummaryResponse",
+    "UserProfileResponse",
+    "ProblemDetail",
 ]

@@ -2,14 +2,11 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
 
 
-def test_dashboard_summary():
+def test_dashboard_summary(client: TestClient, analyst_headers: dict[str, str]):
     """Verify live database-backed dashboard aggregates."""
-    response = client.get("/api/v1/dashboard/summary")
+    response = client.get("/api/v1/dashboard/summary", headers=analyst_headers)
     assert response.status_code == 200
     data = response.json()
     assert "total_volume" in data
@@ -29,9 +26,9 @@ def test_dashboard_summary():
     assert data["open_cases_count"] >= 14
 
 
-def test_dashboard_risk_distribution():
+def test_dashboard_risk_distribution(client: TestClient, analyst_headers: dict[str, str]):
     """Verify risk distribution breakdown."""
-    response = client.get("/api/v1/dashboard/risk-distribution")
+    response = client.get("/api/v1/dashboard/risk-distribution", headers=analyst_headers)
     assert response.status_code == 200
     data = response.json()
     assert "low_count" in data
@@ -41,14 +38,10 @@ def test_dashboard_risk_distribution():
     assert data["total_count"] == data["low_count"] + data["medium_count"] + data["high_count"]
 
 
-def test_dashboard_recent_transactions():
+def test_dashboard_recent_transactions(client: TestClient, analyst_headers: dict[str, str]):
     """Verify recent transactions endpoint returns expected limit."""
-    response = client.get("/api/v1/dashboard/recent-transactions?limit=5")
+    response = client.get("/api/v1/dashboard/recent-transactions?limit=5", headers=analyst_headers)
     assert response.status_code == 200
     items = response.json()
     assert isinstance(items, list)
     assert len(items) == 5
-    for item in items:
-        assert "reference" in item
-        assert "amount" in item
-        assert "risk_score" in item

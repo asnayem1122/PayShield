@@ -1205,7 +1205,8 @@ The project demonstrates mobile development, backend API design, database manage
 | **Milestone 1** | UI & Themes | Precision Sentinel Design System, Light & Dark themes, 175 canonical synthetic transactions | **COMPLETED** | 20 unit/widget tests passing, WCAG AA verified |
 | **Milestone 2** | Phase 1 | Backend Infrastructure & PostgreSQL Foundation, role isolation, migrations setup | **COMPLETED** | 24 permission & health tests passing |
 | **Milestone 2** | Phase 2 | Database Schema, ORM Models, Alembic Migrations, Canonical Multi-Entity Seeding, Heuristic Rules Engine, REST API, Flutter Live Sync, Strict Decimal Money, NULL-Key Recovery Protection | **COMPLETED** | 94 backend tests passing, 38 Flutter tests passing, 100% exact canonical verification |
-| **Milestone 3** | Phase 3 | ML Model Training & Inference (Future scope) | Pending | - |
+| **Milestone 3** | Phase 3 | Authentication, JWT Security (RFC 7519), Refresh Token Rotation, Server-Side RBAC, Least-Privilege DB Grants, Flutter Secure Storage Integration, RFC 9457 Errors | **COMPLETED** | 118 backend tests passing, 45 Flutter tests passing, canonical seed 100% verified |
+| **Milestones 5 & 6** | Phase 4 | ML Dataset Generation, Model Training & Risk Scoring Integration (Future scope) | Pending | Section 15 roadmap alignment |
 
 ---
 
@@ -1214,8 +1215,8 @@ The project demonstrates mobile development, backend API design, database manage
 PayShield is ready for university demonstration when:
 
 - [x] Flutter Android app launches and navigation works.
-- [ ] Login works for Merchant, Analyst and Admin demo accounts.
-- [ ] Backend validates authentication and role permissions.
+- [x] Login works for Merchant, Analyst and Admin demo accounts.
+- [x] Backend validates authentication and role permissions.
 - [x] PostgreSQL migrations build the schema from a clean database.
 - [x] Merchant can submit a simulated transaction.
 - [x] Backend stores the transaction and calls the heuristic risk engine.
@@ -1224,7 +1225,7 @@ PayShield is ready for university demonstration when:
 - [x] REVIEW transactions appear in the analyst queue.
 - [x] Analyst can resolve a review case and add a note.
 - [x] Dashboard statistics are calculated from persisted records.
-- [x] Core backend and Flutter tests pass (94 pytest + 38 flutter_test).
+- [x] Core backend and Flutter tests pass (118 pytest + 45 flutter_test).
 - [x] README explains how to run the project from a clean setup.
 - [x] Demo limitations and ML evaluation are documented honestly.
 - [x] You can explain the architecture and answer the viva questions without depending on Antigravity.

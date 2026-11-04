@@ -17,13 +17,15 @@ The PayShield persistence model enforces least privilege directly in PostgreSQL 
 | **Table `risk_assessments`** | `ALL PRIVILEGES` | `SELECT`, `INSERT` (append-only) | `NO PRIVILEGES` |
 | **Table `analyst_cases`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(case_status, resolution_note, resolved_at, updated_at)` | `NO PRIVILEGES` |
 | **Table `audit_logs`** | `ALL PRIVILEGES` | `SELECT`, `INSERT` (append-only) | `NO PRIVILEGES` |
+| **Table `users`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(password_hash, full_name, failed_login_attempts, locked_until, last_login_at, updated_at)` | `NO PRIVILEGES` |
+| **Table `auth_sessions`** | `ALL PRIVILEGES` | `SELECT`, `INSERT`, `UPDATE(last_used_at, revoked_at)` | `NO PRIVILEGES` |
 | **Sequences** | `ALL PRIVILEGES` | `NO PRIVILEGES` (UUIDs use `gen_random_uuid()`) | `NO PRIVILEGES` |
 
 ---
 
 ## 3. SQL Permission Hardening Script
 
-The following exact SQL commands are applied via `backend/scripts/provision_db.py` and `backend/alembic/versions/0001_initial_schema.py`:
+The following exact SQL commands are applied via Alembic migrations (`0001_initial_schema.py`, `0002_revoke_assigned_analyst_update.py`, and `0003_create_users_table.py`):
 
 ```sql
 -- Revoke PUBLIC default privileges
@@ -37,6 +39,8 @@ REVOKE ALL PRIVILEGES ON TABLE transactions FROM payshield_app;
 REVOKE ALL PRIVILEGES ON TABLE risk_assessments FROM payshield_app;
 REVOKE ALL PRIVILEGES ON TABLE analyst_cases FROM payshield_app;
 REVOKE ALL PRIVILEGES ON TABLE audit_logs FROM payshield_app;
+REVOKE ALL PRIVILEGES ON TABLE users FROM payshield_app;
+REVOKE ALL PRIVILEGES ON TABLE auth_sessions FROM payshield_app;
 
 -- Table SELECT Grants
 GRANT SELECT ON TABLE merchants TO payshield_app;
@@ -44,57 +48,34 @@ GRANT SELECT ON TABLE transactions TO payshield_app;
 GRANT SELECT ON TABLE risk_assessments TO payshield_app;
 GRANT SELECT ON TABLE analyst_cases TO payshield_app;
 GRANT SELECT ON TABLE audit_logs TO payshield_app;
+GRANT SELECT ON TABLE users TO payshield_app;
+GRANT SELECT ON TABLE auth_sessions TO payshield_app;
 
 -- Table INSERT Grants (merchants is read-only at runtime)
 GRANT INSERT ON TABLE transactions TO payshield_app;
 GRANT INSERT ON TABLE risk_assessments TO payshield_app;
 GRANT INSERT ON TABLE analyst_cases TO payshield_app;
 GRANT INSERT ON TABLE audit_logs TO payshield_app;
+GRANT INSERT ON TABLE users TO payshield_app;
+GRANT INSERT ON TABLE auth_sessions TO payshield_app;
 
 -- Column-Level UPDATE Grants (explicitly revoke table-level UPDATE first)
 REVOKE UPDATE ON TABLE transactions FROM payshield_app;
 REVOKE UPDATE ON TABLE analyst_cases FROM payshield_app;
+REVOKE UPDATE ON TABLE users FROM payshield_app;
+REVOKE UPDATE ON TABLE auth_sessions FROM payshield_app;
 
 GRANT UPDATE (transaction_status, updated_at) ON TABLE transactions TO payshield_app;
 GRANT UPDATE (case_status, resolution_note, resolved_at, updated_at) ON TABLE analyst_cases TO payshield_app;
+GRANT UPDATE (password_hash, full_name, failed_login_attempts, locked_until, last_login_at, updated_at) ON TABLE users TO payshield_app;
+GRANT UPDATE (last_used_at, revoked_at) ON TABLE auth_sessions TO payshield_app;
 ```
 
-> **Security Note on Case Assignment Immutability:**
-> In accordance with least-privilege security specifications, `assigned_analyst` is immutable at runtime for `payshield_app`. Analysts cannot alter the assigned analyst of an existing case via standard API updates. Case ownership is assigned at creation or managed exclusively via administrative/system workflows. This immutability is formally enforced via Alembic migration `0002_revoke_assigned_analyst_update.py` (`revision = "0002_revoke_analyst_update"`).
-
 ---
 
-## 4. Alembic Migration History & Permission Reversibility
+## 4. Verification Evidence
 
-1. **`0001_initial_schema.py` (`0001_initial_schema`)**:
-   - Creates the initial five core tables (`merchants`, `transactions`, `risk_assessments`, `analyst_cases`, `audit_logs`).
-   - Applies initial least-privilege grants to `payshield_app` (SELECT on all tables, INSERT on transactions/assessments/cases/audit_logs, column-level UPDATE on transactions and analyst cases).
-   - Preserves original historical grant containing `assigned_analyst`.
-
-2. **`0002_revoke_assigned_analyst_update.py` (`0002_revoke_analyst_update`)**:
-   - Executes `REVOKE UPDATE (assigned_analyst) ON TABLE analyst_cases FROM payshield_app;` on upgrade.
-   - Executes `GRANT UPDATE (assigned_analyst) ON TABLE analyst_cases TO payshield_app;` on downgrade.
-   - Tested for full reversibility (`0001` -> `0002` -> `0001` -> `base` -> `head`) with safety guards against non-disposable databases (`backend/tests/test_migrations.py`).
-
----
-
-## 5. Automated Verification
-
-Every rule in this specification is continuously verified by `backend/tests/test_permissions_phase2.py` across both `payshield_dev` and `payshield_test`:
-- `pg_auth_members = 0` (no role inheritance).
-- `has_database_privilege('public', current_database(), 'CREATE') = False`.
-- `has_table_privilege('payshield_app', 'merchants', 'INSERT') = False`.
-- `has_column_privilege('payshield_app', 'transactions', 'amount', 'UPDATE') = False`.
-- `has_column_privilege('payshield_app', 'analyst_cases', 'trigger_reason', 'UPDATE') = False`.
-- `DELETE` and `TRUNCATE` evaluate to `False` across all 5 tables.
-
----
-
-## 6. Audit Trail Immutability & NULL-Key Safety
-
-- **Append-Only Ledger**: `audit_logs` permits only `SELECT` and `INSERT` for `payshield_app`. `UPDATE`, `DELETE`, and `TRUNCATE` privileges are denied at the database role level.
-- **Nullable Idempotency Token Protection**: In SQL standard semantics, `NULL NOT IN (...)` evaluates to `UNKNOWN` (falsy), which would allow audit records with `idempotency_key IS NULL` to bypass recovery filters. The recovery boundary explicitly guards against unkeyed runtime audit records with:
-  ```sql
-  (idempotency_key IS NULL OR idempotency_key NOT IN (...))
-  ```
-  ensuring unkeyed runtime audit events cannot escape detection or be silently removed.
+The least-privilege security model is continuously validated via automated tests in `backend/tests/`:
+- `test_permissions.py`: Baseline privileges and denial of DDL (CREATE/DROP TABLE).
+- `test_permissions_phase2.py`: Denial of role inheritance, denial of table UPDATE/DELETE/TRUNCATE across transactions, merchants, analyst cases, risk assessments, and audit logs.
+- `test_permissions_phase3.py`: Verification that `payshield_app` has column-level UPDATE strictly on mutable profile/security fields of `users` and `auth_sessions`, and is denied UPDATE on identity/role columns (`id`, `email`, `role`, `merchant_id`).

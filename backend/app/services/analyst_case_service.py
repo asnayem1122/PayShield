@@ -4,6 +4,7 @@ import uuid
 from sqlalchemy.orm import Session
 from app.models.analyst_case import AnalystCase
 from app.models.audit_log import AuditLog
+from app.models.user import User
 from app.repositories.analyst_case_repository import AnalystCaseRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.analyst_case import (
@@ -71,6 +72,7 @@ class AnalystCaseService:
         session: Session,
         case_id: uuid.UUID,
         payload: AnalystCaseUpdate,
+        current_user: User | None = None,
     ) -> AnalystCaseResponse:
         case = AnalystCaseRepository.get_by_id(session, case_id)
         if not case:
@@ -83,12 +85,14 @@ class AnalystCaseService:
             resolution_note=payload.resolution_note,
         )
 
+        actor_type = current_user.role if current_user else "ANALYST"
+        actor_id = str(current_user.id) if current_user else payload.actor_id
         audit = AuditLog(
             entity_type="analyst_case",
-            entity_id=case.id,
+            entity_id=str(case.id),
             action="CASE_WORKFLOW_UPDATED",
-            actor_type="ANALYST",
-            actor_id=payload.actor_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
             details={
                 "case_id": str(case.id),
                 "case_status": case.case_status,

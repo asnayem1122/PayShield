@@ -2,14 +2,11 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
 
 
-def test_list_transactions_default():
+def test_list_transactions_default(client: TestClient, analyst_headers: dict[str, str]):
     """Verify listing seeded transactions."""
-    response = client.get("/api/v1/transactions?limit=20")
+    response = client.get("/api/v1/transactions?limit=20", headers=analyst_headers)
     assert response.status_code == 200
     data = response.json()
     assert "items" in data
@@ -18,9 +15,9 @@ def test_list_transactions_default():
     assert len(data["items"]) == 20
 
 
-def test_get_canonical_transaction_1157():
+def test_get_canonical_transaction_1157(client: TestClient, analyst_headers: dict[str, str]):
     """Verify canonical transaction tx_app_1157 is accessible and has exact remediated amount 1514.00."""
-    response = client.get("/api/v1/transactions/tx_app_1157")
+    response = client.get("/api/v1/transactions/tx_app_1157", headers=analyst_headers)
     assert response.status_code == 200
     data = response.json()
     assert data["reference"] == "tx_app_1157"
@@ -31,13 +28,13 @@ def test_get_canonical_transaction_1157():
     assert data["risk_level"] == "LOW"
 
 
-def test_get_nonexistent_transaction():
+def test_get_nonexistent_transaction(client: TestClient, analyst_headers: dict[str, str]):
     """Verify 404 for unknown transaction reference."""
-    response = client.get("/api/v1/transactions/tx_nonexistent_9999")
+    response = client.get("/api/v1/transactions/tx_nonexistent_9999", headers=analyst_headers)
     assert response.status_code == 404
 
 
-def test_create_transaction_low_risk():
+def test_create_transaction_low_risk(client: TestClient, analyst_headers: dict[str, str]):
     """Verify creating a low risk transaction results in APPROVED status."""
     payload = {
         "counterparty_name": "Test Merchant Shop",
@@ -51,7 +48,7 @@ def test_create_transaction_low_risk():
         "has_high_velocity": False,
         "has_prior_chargebacks": False,
     }
-    response = client.post("/api/v1/transactions", json=payload)
+    response = client.post("/api/v1/transactions", headers=analyst_headers, json=payload)
     assert response.status_code == 201
     data = response.json()
     assert data["counterparty_name"] == "Test Merchant Shop"
@@ -61,7 +58,7 @@ def test_create_transaction_low_risk():
     assert data["transaction_status"] == "APPROVED"
 
 
-def test_create_transaction_high_risk():
+def test_create_transaction_high_risk(client: TestClient, analyst_headers: dict[str, str]):
     """Verify creating a high risk transaction results in BLOCKED status and open analyst case."""
     payload = {
         "counterparty_name": "Suspicious Counterparty Ltd",
@@ -75,7 +72,7 @@ def test_create_transaction_high_risk():
         "has_high_velocity": True,
         "has_prior_chargebacks": True,
     }
-    response = client.post("/api/v1/transactions", json=payload)
+    response = client.post("/api/v1/transactions", headers=analyst_headers, json=payload)
     assert response.status_code == 201
     data = response.json()
     assert data["risk_score"] == 100
@@ -84,7 +81,7 @@ def test_create_transaction_high_risk():
     assert data["recommended_action"] == "BLOCK"
 
 
-def test_decimal_wire_validation_rejects_floats():
+def test_decimal_wire_validation_rejects_floats(client: TestClient, analyst_headers: dict[str, str]):
     """Verify Pydantic rejects raw JSON floats (must be 2-decimal string)."""
     payload = {
         "counterparty_name": "Float Test",
@@ -94,11 +91,11 @@ def test_decimal_wire_validation_rejects_floats():
         "device_model": "Pixel 7",
         "location_city": "Dhaka",
     }
-    response = client.post("/api/v1/transactions", json=payload)
+    response = client.post("/api/v1/transactions", headers=analyst_headers, json=payload)
     assert response.status_code == 422
 
 
-def test_update_transaction_status():
+def test_update_transaction_status(client: TestClient, analyst_headers: dict[str, str]):
     """Verify updating transaction status records change and resolves associated case."""
     # First create a review/blocked transaction
     create_payload = {
@@ -111,7 +108,7 @@ def test_update_transaction_status():
         "is_new_device": True,
         "has_high_velocity": True,
     }
-    create_res = client.post("/api/v1/transactions", json=create_payload)
+    create_res = client.post("/api/v1/transactions", headers=analyst_headers, json=create_payload)
     assert create_res.status_code == 201
     ref = create_res.json()["reference"]
     assert create_res.json()["transaction_status"] == "REVIEW"
@@ -122,6 +119,8 @@ def test_update_transaction_status():
         "notes": "Verified legitimate customer transaction via phone confirmation.",
         "actor_id": "lead_analyst_01",
     }
-    patch_res = client.patch(f"/api/v1/transactions/{ref}/status", json=patch_payload)
+    patch_res = client.patch(
+        f"/api/v1/transactions/{ref}/status", headers=analyst_headers, json=patch_payload
+    )
     assert patch_res.status_code == 200
     assert patch_res.json()["transaction_status"] == "APPROVED"

@@ -35,8 +35,40 @@ class ApiClient {
     _baseUrl = url;
   }
 
+  /// Hook for retrieving active Bearer access token
+  String? Function()? getAccessToken;
+
+  /// Hook for performing async token refresh on 401 response
+  Future<bool> Function()? onRefreshToken;
+
   final http.Client _client = http.Client();
   static const Duration timeout = Duration(seconds: 4);
+
+  Map<String, String> _buildHeaders({Map<String, String>? extra}) {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      ...?extra,
+    };
+    final token = getAccessToken?.call();
+    if (token != null && token.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+    return headers;
+  }
+
+  HttpException _parseError(int statusCode, String body, String fallback) {
+    try {
+      final json = jsonDecode(body);
+      if (json is Map<String, dynamic>) {
+        final detail = json['detail'] as String?;
+        final title = json['title'] as String?;
+        if (detail != null) {
+          return HttpException(detail, statusCode: statusCode, title: title);
+        }
+      }
+    } catch (_) {}
+    return HttpException(fallback, statusCode: statusCode);
+  }
 
   /// Check whether the backend is reachable and healthy.
   Future<bool> checkBackendHealth() async {
@@ -52,60 +84,97 @@ class ApiClient {
   /// Perform a GET request.
   Future<dynamic> get(String path) async {
     final uri = Uri.parse('$_baseUrl$path');
-    final response = await _client.get(uri, headers: {
-      'Accept': 'application/json',
-    }).timeout(timeout);
+    var response = await _client
+        .get(uri, headers: _buildHeaders())
+        .timeout(timeout);
+
+    // Automatic token refresh attempt on 401
+    if (response.statusCode == 401 && onRefreshToken != null) {
+      final refreshed = await onRefreshToken!();
+      if (refreshed) {
+        response = await _client
+            .get(uri, headers: _buildHeaders())
+            .timeout(timeout);
+      }
+    }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return jsonDecode(utf8.decode(response.bodyBytes));
     }
-    throw HttpException('GET $path failed: ${response.statusCode} ${response.body}');
+    throw _parseError(
+      response.statusCode,
+      response.body,
+      'GET $path failed: ${response.statusCode} ${response.body}',
+    );
   }
 
   /// Perform a POST request.
   Future<dynamic> post(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('$_baseUrl$path');
-    final response = await _client
-        .post(
-          uri,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: jsonEncode(body),
-        )
+    final reqHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
+
+    var response = await _client
+        .post(uri, headers: reqHeaders, body: jsonEncode(body))
         .timeout(timeout);
+
+    // Automatic token refresh attempt on 401 (except on /auth routes)
+    if (response.statusCode == 401 && !path.startsWith('/auth') && onRefreshToken != null) {
+      final refreshed = await onRefreshToken!();
+      if (refreshed) {
+        final retryHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
+        response = await _client
+            .post(uri, headers: retryHeaders, body: jsonEncode(body))
+            .timeout(timeout);
+      }
+    }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return jsonDecode(utf8.decode(response.bodyBytes));
     }
-    throw HttpException('POST $path failed: ${response.statusCode} ${response.body}');
+    throw _parseError(
+      response.statusCode,
+      response.body,
+      'POST $path failed: ${response.statusCode} ${response.body}',
+    );
   }
 
   /// Perform a PATCH request.
   Future<dynamic> patch(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('$_baseUrl$path');
-    final response = await _client
-        .patch(
-          uri,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: jsonEncode(body),
-        )
+    final reqHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
+
+    var response = await _client
+        .patch(uri, headers: reqHeaders, body: jsonEncode(body))
         .timeout(timeout);
+
+    if (response.statusCode == 401 && !path.startsWith('/auth') && onRefreshToken != null) {
+      final refreshed = await onRefreshToken!();
+      if (refreshed) {
+        final retryHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
+        response = await _client
+            .patch(uri, headers: retryHeaders, body: jsonEncode(body))
+            .timeout(timeout);
+      }
+    }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return jsonDecode(utf8.decode(response.bodyBytes));
     }
-    throw HttpException('PATCH $path failed: ${response.statusCode} ${response.body}');
+    throw _parseError(
+      response.statusCode,
+      response.body,
+      'PATCH $path failed: ${response.statusCode} ${response.body}',
+    );
   }
 }
 
 class HttpException implements Exception {
   final String message;
-  HttpException(this.message);
+  final int? statusCode;
+  final String? title;
+
+  HttpException(this.message, {this.statusCode, this.title});
+
   @override
   String toString() => message;
 }

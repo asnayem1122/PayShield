@@ -50,11 +50,21 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
 
-    # Security
+    # Security & JWT Configuration
     SECRET_KEY: SecretStr = Field(
-        default=SecretStr("development_secret_key_never_use_in_production")
+        default=SecretStr("payshield_development_jwt_secret_key_minimum_32_bytes_long_for_hs256!")
     )
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    JWT_SECRET_KEY: SecretStr = Field(
+        default=SecretStr("payshield_development_jwt_secret_key_minimum_32_bytes_long_for_hs256!")
+    )
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ISSUER: str = "payshield-auth"
+    JWT_AUDIENCE: str = "payshield-client"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCKOUT_MINUTES: int = 15
+    BCRYPT_ROUNDS: int = 12
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

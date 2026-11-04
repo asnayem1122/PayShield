@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The PayShield FastAPI service exposes a REST API at `/api/v1` for payment transaction ingestion, risk evaluation, fraud investigation workflows, and live dashboard analytics.
+The PayShield FastAPI service exposes a REST API at `/api/v1` for payment transaction ingestion, risk evaluation, fraud investigation workflows, authentication, and live dashboard analytics.
 
 - **Base URL (Local)**: `http://127.0.0.1:8000/api/v1`
 - **Android Emulator Base URL**: `http://10.0.2.2:8000/api/v1`
@@ -22,9 +22,81 @@ To prevent IEEE 754 floating-point inaccuracies, monetary amounts are transmitte
 
 ---
 
-## 3. Endpoints
+## 3. Authentication & Server-Side Authorization (RBAC)
 
-### 3.1. System Health & Readiness
+All sensitive endpoints require a JSON Web Token (JWT) transmitted via standard HTTP header:
+```http
+Authorization: Bearer <access_token>
+```
+
+### 3.1. Role Matrix
+| Role | Scoping / Permissions | Restricted Endpoints |
+|---|---|---|
+| `MERCHANT` | Scoped strictly to own `merchant_id`. Can ingest own transactions, view own transactions, view own dashboard summary. | `/cases/*` (403), `/audit/*` (403), `PATCH /transactions/*/status` (403), other merchants' transactions (404 anti-enumeration). |
+| `ANALYST` | System-wide visibility. Full access to `/cases/*`, `/transactions/*`, `/dashboard/*`, `/risk/*`, `/audit/*`. Can update case status and transaction status. | User management. |
+| `ADMIN` | Super-administrative access across all tenant records, audit logs, system configurations. | None. |
+
+### 3.2. Canonical Demo Accounts
+- **Merchant**: `merchant@techpulse.bd` (Linked to PayShield Demo Merchant)
+- **Analyst**: `analyst.shafiq@payshield.internal` (Unlinked)
+- **Admin**: `admin.nayem@payshield.internal` (Unlinked)
+- **Default Password**: `PayShield2026!`
+
+---
+
+## 4. Endpoints
+
+### 4.1. Authentication (`/auth`)
+
+#### `POST /api/v1/auth/login`
+Authenticate user with email and password, issuing an access and refresh token pair.
+- **Request Body**:
+  ```json
+  {
+    "email": "merchant@techpulse.bd",
+    "password": "PayShield2026!"
+  }
+  ```
+- **Response 200**:
+  ```json
+  {
+    "access_token": "eyJhbGciOi...",
+    "refresh_token": "eyJhbGciOi...",
+    "token_type": "Bearer",
+    "expires_in": 900,
+    "user": {
+      "id": "e6f42da1-...",
+      "email": "merchant@techpulse.bd",
+      "full_name": "TechPulse Demo Merchant",
+      "role": "MERCHANT",
+      "status": "ACTIVE",
+      "merchant_id": "908d0e51-...",
+      "merchant_name": "PayShield Demo Merchant"
+    }
+  }
+  ```
+- **Response 401 (RFC 9457)**: Invalid credentials (generic anti-enumeration).
+- **Response 423 (RFC 9457)**: Account locked due to 5 consecutive failed attempts.
+
+#### `GET /api/v1/auth/me`
+Retrieve identity and profile for the authenticated user.
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Response 200**: Returns `UserProfileResponse` with timestamps and merchant linkage.
+
+#### `POST /api/v1/auth/refresh`
+Exchange an active refresh token for a newly issued access token and rotated refresh token.
+- **Request Body**: `{"refresh_token": "..."}`
+- **Security Policy**: Refresh token rotation with immediate revocation of previous token. Replay/reuse detection revokes all active sessions for the user.
+
+#### `POST /api/v1/auth/logout`
+Revoke active session(s) upon logout.
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Request Body (Optional)**: `{"refresh_token": "..."}`
+- **Response 200**: `{"status": "success", "message": "Successfully logged out"}`
+
+---
+
+### 4.2. System Health & Readiness
 
 #### `GET /health` / `GET /api/v1/health`
 Process liveness probe.
@@ -60,10 +132,11 @@ Database connectivity probe.
 
 ---
 
-### 3.2. Dashboard Aggregations
+### 4.3. Dashboard Aggregations
 
 #### `GET /api/v1/dashboard/summary`
-Calculates live database aggregations.
+Calculates live database aggregations (scoped to merchant when authenticated as Merchant).
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Response 200**:
   ```json
   {
@@ -78,13 +151,14 @@ Calculates live database aggregations.
     "flagged_count": 14,
     "blocked_count": 3,
     "open_cases_count": 14,
-    "average_risk_score": 25.17,
+    "average_risk_score": 38.65,
     "high_risk_ratio": 0.0171
   }
   ```
 
 #### `GET /api/v1/dashboard/risk-distribution`
-Risk tier breakdown.
+Risk tier breakdown (LOW, MEDIUM, HIGH).
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Response 200**:
   ```json
   {
@@ -95,92 +169,105 @@ Risk tier breakdown.
   }
   ```
 
-#### `GET /api/v1/dashboard/recent-transactions?limit=10`
-Returns the 10 most recent transactions.
+#### `GET /api/v1/dashboard/recent-transactions`
+Recent transaction list (default limit 10).
+- **Headers**: `Authorization: Bearer <access_token>`
 
 ---
 
-### 3.3. Transactions
+### 4.4. Transactions
 
 #### `GET /api/v1/transactions`
-List transactions with optional filtering and pagination.
+List paginated transactions. When authenticated as MERCHANT, automatically isolated to user's `merchant_id`.
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Query Parameters**:
   - `status`: `APPROVED`, `REVIEW`, `BLOCKED`
   - `risk_level`: `LOW`, `MEDIUM`, `HIGH`
-  - `query`: Text search across reference, counterparty name, and location
-  - `limit`: Default `50` (1-200)
-  - `offset`: Default `0`
+  - `query`: Text search on counterparty, reference, or city
+  - `limit`: 50 (max 200)
+  - `offset`: 0
 
 #### `GET /api/v1/transactions/{reference}`
-Retrieve full details of a specific transaction.
+Retrieve details for a single transaction.
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Tenant Isolation**: If requested transaction belongs to another merchant, returns 404 Not Found to prevent enumeration.
 
 #### `POST /api/v1/transactions`
 Submit a payment transaction for real-time risk assessment and ingestion.
+- **Headers**: `Authorization: Bearer <access_token>`
+- **Tenant Isolation**: For Merchant users, `merchant_id` is automatically forced to the user's authentic `merchant_id`.
 - **Request Body**:
   ```json
   {
-    "counterparty_name": "Rahim Electronics",
-    "amount": "15000.00",
+    "counterparty_name": "Daraz Bangladesh Ltd",
+    "amount": "1250.00",
     "currency": "BDT",
     "channel": "MOBILE_APP",
-    "device_model": "Xiaomi Redmi Note 11",
+    "device_model": "Samsung Galaxy A53",
     "location_city": "Dhaka",
     "is_location_anomaly": false,
-    "is_new_device": true,
+    "is_new_device": false,
     "has_high_velocity": false,
     "has_prior_chargebacks": false
   }
   ```
-- **Response 201**: Created `TransactionResponse` with computed `risk_score`, `risk_level`, `recommended_action`, and auto-created `AnalystCase` if reviewed/blocked.
 
 #### `PATCH /api/v1/transactions/{reference}/status`
-Update transaction status and record an append-only audit trail entry.
+Update transaction status (restricted to `ANALYST` and `ADMIN`).
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**:
   ```json
   {
     "status": "APPROVED",
-    "notes": "Customer verified via phone call.",
-    "actor_id": "lead_analyst_01"
+    "notes": "Verified legitimate customer transaction.",
+    "actor_id": "analyst_shafiq"
   }
   ```
 
 ---
 
-### 3.4. Analyst Cases
+### 4.5. Analyst Cases
 
 #### `GET /api/v1/cases`
-Paginated fraud investigation cases with embedded transaction metadata.
+Paginated fraud investigation cases with embedded transaction metadata (restricted to `ANALYST` and `ADMIN`).
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Query Parameters**:
   - `status`: `OPEN`, `IN_REVIEW`, `RESOLVED`
   - `priority`: `LOW`, `MEDIUM`, `HIGH`
   - `limit`: 50
   - `offset`: 0
 
+#### `GET /api/v1/cases/{case_id}`
+Retrieve details for a specific case (restricted to `ANALYST` and `ADMIN`).
+- **Headers**: `Authorization: Bearer <access_token>`
+
 #### `PATCH /api/v1/cases/{case_id}`
-Update analyst investigation workflow.
+Update analyst investigation workflow (restricted to `ANALYST` and `ADMIN`).
+- **Headers**: `Authorization: Bearer <access_token>`
 - **Request Body**:
   ```json
   {
     "case_status": "IN_REVIEW",
-    "assigned_analyst": "analyst_shafiq",
     "resolution_note": "Investigating device fingerprint anomalies."
   }
   ```
 
 ---
 
-### 3.5. Risk Policy
+### 4.6. Risk Policy
 
 #### `GET /api/v1/risk/indicators`
 Metadata describing heuristic scoring rules, weights, and thresholds.
-- Baseline Floor: 10
-- New Device: +25
-- High Velocity: +25
-- Prior Chargebacks: +25
-- High Amount ($\ge \text{৳ 10,000}$): +15
-- Location Anomaly: +10
-- Max Raw Score: 110, Clamped Score Cap: 100
-- Risk Bands: $0\text{--}39 \rightarrow \text{LOW}$, $40\text{--}74 \rightarrow \text{MEDIUM}$, $75\text{--}100 \rightarrow \text{HIGH}$
+- **Headers**: `Authorization: Bearer <access_token>`
 
 #### `POST /api/v1/risk/assess`
-Dry-run heuristic risk evaluation without creating a transaction.
+Dry-run heuristic risk evaluation without persisting transaction.
+- **Headers**: `Authorization: Bearer <access_token>`
+
+---
+
+### 4.7. Audit Log
+
+#### `GET /api/v1/audit/logs`
+Retrieve immutable audit trail entries (restricted to `ADMIN` and `ANALYST`).
+- **Headers**: `Authorization: Bearer <access_token>`

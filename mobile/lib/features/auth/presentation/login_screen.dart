@@ -9,6 +9,7 @@ import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_text_field.dart';
 import '../../../core/widgets/simulation_disclaimer_banner.dart';
+import 'auth_controller.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -19,7 +20,7 @@ class LoginScreen extends ConsumerStatefulWidget {
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _emailController = TextEditingController(text: 'merchant@techpulse.bd');
-  final _passwordController = TextEditingController(text: '••••••••••••');
+  final _passwordController = TextEditingController(text: 'PayShield2026!');
 
   @override
   void dispose() {
@@ -30,6 +31,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   void _selectRole(DemoRole role) {
     ref.read(demoRoleProvider.notifier).setRole(role);
+    _passwordController.text = 'PayShield2026!';
     switch (role) {
       case DemoRole.merchant:
         _emailController.text = 'merchant@techpulse.bd';
@@ -43,11 +45,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
+  Future<void> _handleLogin() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    if (email.isEmpty || password.isEmpty) return;
+
+    final success = await ref
+        .read(authControllerProvider.notifier)
+        .login(email, password);
+    if (success && mounted) {
+      context.go('/dashboard');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppCustomColors>()!;
     final theme = Theme.of(context);
     final activeRole = ref.watch(demoRoleProvider);
+    final authState = ref.watch(authControllerProvider);
+    final isAuthenticating = authState is AuthAuthenticating;
 
     return Scaffold(
       body: SafeArea(
@@ -132,7 +149,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           children: [
                             for (final role in DemoRole.values)
                               InkWell(
-                                onTap: () => _selectRole(role),
+                                onTap: isAuthenticating ? null : () => _selectRole(role),
                                 borderRadius: BorderRadius.circular(6),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
@@ -169,25 +186,63 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                         const SizedBox(height: AppSpacing.md),
 
+                        if (authState is AuthError) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colors.blockBg,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: colors.blockBorder,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.error_outline_rounded,
+                                    size: 18, color: colors.blockText),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    authState.message,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: colors.blockText,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: AppSpacing.md),
+                        ],
+
                         AppTextField(
                           label: 'Account Email',
                           controller: _emailController,
                           prefixIcon: Icons.alternate_email_rounded,
+                          readOnly: isAuthenticating,
                         ),
                         const SizedBox(height: AppSpacing.sm),
 
                         AppTextField(
-                          label: 'Demonstration Credential',
+                          label: 'Password',
                           controller: _passwordController,
                           obscureText: true,
                           prefixIcon: Icons.lock_outline_rounded,
-                          helperText: 'Simulated field — no real password stored.',
+                          helperText: 'Canonical Demo Password: PayShield2026!',
+                          readOnly: isAuthenticating,
                         ),
                         const SizedBox(height: AppSpacing.lg),
 
                         AppButton(
-                          label: 'Enter As ${activeRole.displayName}',
-                          onPressed: () => context.go('/dashboard'),
+                          label: isAuthenticating
+                              ? 'Authenticating...'
+                              : 'Enter As ${activeRole.displayName}',
+                          onPressed: isAuthenticating ? null : _handleLogin,
                         ),
                         const SizedBox(height: AppSpacing.sm),
 

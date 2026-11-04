@@ -1,7 +1,9 @@
 """Risk assessment and indicator API endpoints."""
 
 from decimal import Decimal
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.core.dependencies import get_current_user
+from app.models.user import User
 from app.schemas.risk_assessment import (
     RiskAssessRequest,
     RiskIndicator,
@@ -17,7 +19,7 @@ router = APIRouter(prefix="/risk", tags=["Risk Management"])
 
 
 @router.get("/indicators", response_model=RiskIndicatorsResponse)
-def get_risk_indicators():
+def get_risk_indicators(current_user: User = Depends(get_current_user)):
     """Retrieve rule metadata, weights, and scoring policy configuration."""
     indicators = [
         RiskIndicator(
@@ -80,7 +82,10 @@ def get_risk_indicators():
 
 
 @router.post("/assess", response_model=RiskScoringResult)
-def evaluate_risk(payload: RiskAssessRequest):
+def evaluate_risk(
+    payload: RiskAssessRequest,
+    current_user: User = Depends(get_current_user),
+):
     """Run ad-hoc dry-run heuristic risk evaluation without persisting transaction."""
     inp = RiskInput(
         amount=Decimal(payload.amount),

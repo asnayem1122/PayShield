@@ -16,12 +16,15 @@ class TransactionRepository:
         status: str | None = None,
         risk_level: str | None = None,
         query: str | None = None,
+        merchant_id: uuid.UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Transaction], int]:
         """List transactions with optional filtering and pagination."""
         stmt = select(Transaction)
 
+        if merchant_id is not None:
+            stmt = stmt.where(Transaction.merchant_id == merchant_id)
         if status:
             stmt = stmt.where(Transaction.transaction_status == status.upper())
         if risk_level:
@@ -41,7 +44,13 @@ class TransactionRepository:
         total = session.execute(count_stmt).scalar_one()
 
         # Fetch page ordered by created_at DESC
-        stmt = stmt.order_by(Transaction.created_at.desc(), Transaction.reference.desc()).limit(limit).offset(offset)
+        stmt = (
+            stmt.order_by(
+                Transaction.created_at.desc(), Transaction.reference.desc()
+            )
+            .limit(limit)
+            .offset(offset)
+        )
         items = list(session.execute(stmt).scalars().all())
 
         return items, total
@@ -67,7 +76,6 @@ class TransactionRepository:
         transaction: Transaction,
         new_status: str,
     ) -> Transaction:
-        """Update transaction status (column-level UPDATE)."""
         transaction.transaction_status = new_status
         transaction.updated_at = datetime.now(timezone.utc)
         session.flush()

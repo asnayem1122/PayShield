@@ -1,6 +1,7 @@
 """Dashboard live aggregation repository."""
 
 from decimal import Decimal
+import uuid
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from app.models.analyst_case import AnalystCase
@@ -11,7 +12,7 @@ class DashboardRepository:
     """Repository for live database-backed dashboard aggregations."""
 
     @staticmethod
-    def get_summary(session: Session) -> dict:
+    def get_summary(session: Session, merchant_id: uuid.UUID | None = None) -> dict:
         """Calculate live financial and fraud risk KPI aggregates."""
         tx_stats_stmt = select(
             func.coalesce(func.sum(Transaction.amount), Decimal("0.00")).label("total_volume"),
@@ -34,11 +35,24 @@ class DashboardRepository:
             func.coalesce(func.avg(Transaction.risk_score), 0.0).label("avg_risk_score"),
             func.count(case((Transaction.risk_level == "HIGH", 1))).label("high_risk_count"),
         )
+        if merchant_id is not None:
+            tx_stats_stmt = tx_stats_stmt.where(Transaction.merchant_id == merchant_id)
+
         row = session.execute(tx_stats_stmt).one()
 
-        open_cases_stmt = select(func.count(AnalystCase.id)).where(
-            AnalystCase.case_status.in_(["OPEN", "IN_REVIEW"])
-        )
+        if merchant_id is not None:
+            open_cases_stmt = (
+                select(func.count(AnalystCase.id))
+                .join(Transaction, AnalystCase.transaction_id == Transaction.id)
+                .where(
+                    AnalystCase.case_status.in_(["OPEN", "IN_REVIEW"]),
+                    Transaction.merchant_id == merchant_id,
+                )
+            )
+        else:
+            open_cases_stmt = select(func.count(AnalystCase.id)).where(
+                AnalystCase.case_status.in_(["OPEN", "IN_REVIEW"])
+            )
         open_cases_count = session.execute(open_cases_stmt).scalar_one()
 
         total_tx = row.total_transactions or 0
@@ -65,7 +79,7 @@ class DashboardRepository:
         }
 
     @staticmethod
-    def get_risk_distribution(session: Session) -> dict:
+    def get_risk_distribution(session: Session, merchant_id: uuid.UUID | None = None) -> dict:
         """Count transactions across risk levels."""
         stmt = select(
             func.count(case((Transaction.risk_level == "LOW", 1))).label("low_count"),
@@ -73,6 +87,9 @@ class DashboardRepository:
             func.count(case((Transaction.risk_level == "HIGH", 1))).label("high_count"),
             func.count(Transaction.id).label("total_count"),
         )
+        if merchant_id is not None:
+            stmt = stmt.where(Transaction.merchant_id == merchant_id)
+
         row = session.execute(stmt).one()
         return {
             "low_count": row.low_count or 0,
@@ -82,7 +99,14 @@ class DashboardRepository:
         }
 
     @staticmethod
-    def get_recent_transactions(session: Session, limit: int = 10) -> list[Transaction]:
+    def get_recent_transactions(
+        session: Session,
+        limit: int = 10,
+        merchant_id: uuid.UUID | None = None,
+    ) -> list[Transaction]:
         """Fetch the most recent transactions."""
-        stmt = select(Transaction).order_by(Transaction.created_at.desc(), Transaction.reference.desc()).limit(limit)
+        stmt = select(Transaction)
+        if merchant_id is not None:
+            stmt = stmt.where(Transaction.merchant_id == merchant_id)
+        stmt = stmt.order_by(Transaction.created_at.desc(), Transaction.reference.desc()).limit(limit)
         return list(session.execute(stmt).scalars().all())

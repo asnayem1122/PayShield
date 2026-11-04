@@ -7,6 +7,7 @@ from app.models.analyst_case import AnalystCase
 from app.models.audit_log import AuditLog
 from app.models.risk_assessment import RiskAssessment
 from app.models.transaction import Transaction
+from app.models.user import User
 from app.repositories.analyst_case_repository import AnalystCaseRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.merchant_repository import MerchantRepository
@@ -23,9 +24,15 @@ class TransactionService:
     def create_transaction(
         session: Session,
         payload: TransactionCreate,
+        current_user: User | None = None,
     ) -> tuple[Transaction, RiskAssessment, AnalystCase | None]:
         # 1. Resolve merchant
-        merchant_id = payload.merchant_id
+        if current_user and current_user.role == "MERCHANT":
+            # Force merchant ownership to the authenticated merchant
+            merchant_id = current_user.merchant_id
+        else:
+            merchant_id = payload.merchant_id
+
         if not merchant_id:
             default_merchant = MerchantRepository.get_default_merchant(session)
             if not default_merchant:
@@ -96,10 +103,6 @@ class TransactionService:
         # 7. Create AnalystCase if REVIEW or BLOCKED
         analyst_case: AnalystCase | None = None
         if status in ("REVIEW", "BLOCKED"):
-            # Select appropriate controlled trigger_reason:
-            # 'UNUSUAL_HOUR', 'NEW_DEVICE', 'VELOCITY_WARN', 'HIGH_AMOUNT',
-            # 'DISTANCE_DELTA', 'MULTIPLE_CARDS', 'DEVICE_MISMATCH', 'NEW_ACCOUNT',
-            # 'OFF_HOURS', 'MANUAL_FLAG', 'SCORE_THRESHOLD_EXCEEDED'
             if payload.has_high_velocity:
                 reason = "VELOCITY_WARN"
             elif payload.is_new_device:
@@ -121,12 +124,14 @@ class TransactionService:
             AnalystCaseRepository.create(session, analyst_case)
 
         # 8. Record AuditLog
+        actor_type = current_user.role if current_user else "SYSTEM"
+        actor_id = str(current_user.id) if current_user else "risk_engine"
         audit = AuditLog(
             entity_type="transaction",
-            entity_id=tx.id,
+            entity_id=str(tx.id),
             action="TRANSACTION_EVALUATED_AND_CREATED",
-            actor_type="SYSTEM",
-            actor_id="risk_engine",
+            actor_type=actor_type,
+            actor_id=actor_id,
             details={
                 "reference": tx.reference,
                 "amount": str(tx.amount),
@@ -147,6 +152,7 @@ class TransactionService:
         session: Session,
         reference: str,
         payload: TransactionUpdateStatus,
+        current_user: User | None = None,
     ) -> Transaction:
         tx = TransactionRepository.get_by_reference(session, reference)
         if not tx:
@@ -160,9 +166,10 @@ class TransactionService:
         TransactionRepository.update_status(session, tx, new_status)
 
         # If an analyst case exists and new_status is terminal (APPROVED or BLOCKED), resolve case
+        actor_name = current_user.full_name if current_user else payload.actor_id
         case = AnalystCaseRepository.get_by_transaction_id(session, tx.id)
         if case and case.case_status != "RESOLVED" and new_status in ("APPROVED", "BLOCKED"):
-            note = f"Transaction marked {new_status} by {payload.actor_id}."
+            note = f"Transaction marked {new_status} by {actor_name}."
             if payload.notes:
                 note += f" Notes: {payload.notes}"
             AnalystCaseRepository.update(
@@ -173,12 +180,14 @@ class TransactionService:
             )
 
         # Record AuditLog
+        actor_type = current_user.role if current_user else "ANALYST"
+        actor_id = str(current_user.id) if current_user else payload.actor_id
         audit = AuditLog(
             entity_type="transaction",
-            entity_id=tx.id,
+            entity_id=str(tx.id),
             action="TRANSACTION_STATUS_UPDATED",
-            actor_type="ANALYST",
-            actor_id=payload.actor_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
             details={
                 "reference": tx.reference,
                 "old_status": old_status,
