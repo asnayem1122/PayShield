@@ -1205,7 +1205,7 @@ The project demonstrates mobile development, backend API design, database manage
 | **Milestone 1** | UI & Themes | Precision Sentinel Design System, Light & Dark themes, 175 canonical synthetic transactions | **COMPLETED** | 20 unit/widget tests passing, WCAG AA verified |
 | **Milestone 2** | Phase 1 | Backend Infrastructure & PostgreSQL Foundation, role isolation, migrations setup | **COMPLETED** | 24 permission & health tests passing |
 | **Milestone 2** | Phase 2 | Database Schema, ORM Models, Alembic Migrations, Canonical Multi-Entity Seeding, Heuristic Rules Engine, REST API, Flutter Live Sync, Strict Decimal Money, NULL-Key Recovery Protection | **COMPLETED** | 94 backend tests passing, 38 Flutter tests passing, 100% exact canonical verification |
-| **Milestone 3** | Phase 3 | Authentication, JWT Security (RFC 7519), Refresh Token Rotation, Server-Side RBAC, Least-Privilege DB Grants, Flutter Secure Storage Integration, RFC 9457 Errors | **COMPLETED** | 118 backend tests passing, 45 Flutter tests passing, canonical seed 100% verified |
+| **Milestone 3** | Phase 3 | Authentication, JWT Security (RFC 7519), Session Family Isolation, Refresh Token Rotation, Server-Side RBAC, Anti-Account Enumeration, IP Rate Limiting, Least-Privilege DB Grants, Flutter Secure Storage & Single-Flight Refresh Coalescing, RFC 9457 Errors | **COMPLETED** | 126 backend tests passing, 47 Flutter tests passing, canonical seed 100% verified |
 | **Milestones 5 & 6** | Phase 4 | ML Dataset Generation, Model Training & Risk Scoring Integration (Future scope) | Pending | Section 15 roadmap alignment |
 
 ---

@@ -41,6 +41,9 @@ class ApiClient {
   /// Hook for performing async token refresh on 401 response
   Future<bool> Function()? onRefreshToken;
 
+  /// In-flight refresh future to coalesce concurrent 401s into a single refresh flight
+  Future<bool>? _refreshFuture;
+
   final http.Client _client = http.Client();
   static const Duration timeout = Duration(seconds: 4);
 
@@ -70,6 +73,23 @@ class ApiClient {
     return HttpException(fallback, statusCode: statusCode);
   }
 
+  /// Perform token refresh coalesced into a single flight.
+  /// Concurrent 401 calls await the same single future to avoid race conditions.
+  Future<bool> _refreshAccessToken() async {
+    if (onRefreshToken == null) return false;
+    if (_refreshFuture != null) {
+      return _refreshFuture!;
+    }
+
+    final future = onRefreshToken!();
+    _refreshFuture = future;
+    try {
+      return await future;
+    } finally {
+      _refreshFuture = null;
+    }
+  }
+
   /// Check whether the backend is reachable and healthy.
   Future<bool> checkBackendHealth() async {
     try {
@@ -88,9 +108,9 @@ class ApiClient {
         .get(uri, headers: _buildHeaders())
         .timeout(timeout);
 
-    // Automatic token refresh attempt on 401
-    if (response.statusCode == 401 && onRefreshToken != null) {
-      final refreshed = await onRefreshToken!();
+    // Automatic token refresh attempt on 401 (except on /auth routes)
+    if (response.statusCode == 401 && !path.startsWith('/auth') && onRefreshToken != null) {
+      final refreshed = await _refreshAccessToken();
       if (refreshed) {
         response = await _client
             .get(uri, headers: _buildHeaders())
@@ -119,7 +139,7 @@ class ApiClient {
 
     // Automatic token refresh attempt on 401 (except on /auth routes)
     if (response.statusCode == 401 && !path.startsWith('/auth') && onRefreshToken != null) {
-      final refreshed = await onRefreshToken!();
+      final refreshed = await _refreshAccessToken();
       if (refreshed) {
         final retryHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
         response = await _client
@@ -148,7 +168,7 @@ class ApiClient {
         .timeout(timeout);
 
     if (response.statusCode == 401 && !path.startsWith('/auth') && onRefreshToken != null) {
-      final refreshed = await onRefreshToken!();
+      final refreshed = await _refreshAccessToken();
       if (refreshed) {
         final retryHeaders = _buildHeaders(extra: {'Content-Type': 'application/json'});
         response = await _client

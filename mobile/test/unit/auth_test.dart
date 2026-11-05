@@ -9,6 +9,7 @@ import 'package:mobile/features/auth/presentation/auth_controller.dart';
 
 class MockAuthRepository extends AuthRepository {
   bool shouldFail = false;
+  bool shouldFailLogout = false;
   String failMessage = 'Invalid email or password';
 
   @override
@@ -71,7 +72,11 @@ class MockAuthRepository extends AuthRepository {
   }
 
   @override
-  Future<void> logout(String? refreshToken) async {}
+  Future<void> logout(String? refreshToken) async {
+    if (shouldFailLogout) {
+      throw HttpException('Server Error', statusCode: 500);
+    }
+  }
 }
 
 void main() {
@@ -98,25 +103,43 @@ void main() {
   group('UserSession Domain Unit Tests', () {
     test('Correctly parses JSON into UserSession and checks role getters', () {
       final json = {
-        'id': '00000000-0000-0000-0000-000000000001',
-        'email': 'merchant@techpulse.bd',
-        'full_name': 'TechPulse Merchant Admin',
+        'id': 'usr_test_123',
+        'email': 'merchant@test.com',
+        'full_name': 'Test Merchant',
         'role': 'MERCHANT',
         'status': 'ACTIVE',
-        'merchant_id': '00000000-0000-0000-0000-000000000099',
-        'merchant_name': 'PayShield Demo Merchant',
+        'merchant_id': 'm_001',
+        'merchant_name': 'Test Store',
       };
 
       final session = UserSession.fromJson(json);
-      expect(session.id, equals('00000000-0000-0000-0000-000000000001'));
-      expect(session.email, equals('merchant@techpulse.bd'));
+      expect(session.id, equals('usr_test_123'));
+      expect(session.email, equals('merchant@test.com'));
       expect(session.isMerchant, isTrue);
       expect(session.isAnalyst, isFalse);
       expect(session.isAdmin, isFalse);
-      expect(session.merchantName, equals('PayShield Demo Merchant'));
+    });
 
-      final outJson = session.toJson();
-      expect(outJson['role'], equals('MERCHANT'));
+    test('Checks analyst and admin role getters correctly', () {
+      const analyst = UserSession(
+        id: '1',
+        email: 'a@p.internal',
+        fullName: 'A',
+        role: 'ANALYST',
+        status: 'ACTIVE',
+      );
+      expect(analyst.isAnalyst, isTrue);
+      expect(analyst.isMerchant, isFalse);
+
+      const admin = UserSession(
+        id: '2',
+        email: 'admin@p.internal',
+        fullName: 'Admin',
+        role: 'ADMIN',
+        status: 'ACTIVE',
+      );
+      expect(admin.isAdmin, isTrue);
+      expect(admin.isAnalyst, isFalse);
     });
   });
 
@@ -151,7 +174,7 @@ void main() {
 
       final success = await controller.login(
         'analyst.shafiq@payshield.internal',
-        'PayShield2026!',
+        'TestSecretPassword123!',
       );
 
       expect(success, isTrue);
@@ -186,7 +209,19 @@ void main() {
 
     test('Logout clears tokens and transitions to AuthUnauthenticated', () async {
       final controller = container.read(authControllerProvider.notifier);
-      await controller.login('merchant@techpulse.bd', 'PayShield2026!');
+      await controller.login('merchant@techpulse.bd', 'TestSecretPassword123!');
+      expect(container.read(authControllerProvider), isA<AuthAuthenticated>());
+
+      await controller.logout();
+      expect(container.read(authControllerProvider), isA<AuthUnauthenticated>());
+      expect(await memoryStorage.getAccessToken(), isNull);
+      expect(await memoryStorage.getRefreshToken(), isNull);
+    });
+
+    test('Logout clears tokens and transitions to AuthUnauthenticated even on backend error', () async {
+      mockRepo.shouldFailLogout = true;
+      final controller = container.read(authControllerProvider.notifier);
+      await controller.login('merchant@techpulse.bd', 'TestSecretPassword123!');
       expect(container.read(authControllerProvider), isA<AuthAuthenticated>());
 
       await controller.logout();

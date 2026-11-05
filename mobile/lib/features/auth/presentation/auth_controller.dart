@@ -115,10 +115,17 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() async {
-    final refreshToken = await tokenStorage.getRefreshToken();
-    await repository.logout(refreshToken);
-    await tokenStorage.clearTokens();
-    state = const AuthUnauthenticated();
+    try {
+      final refreshToken = await tokenStorage.getRefreshToken();
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        await repository.logout(refreshToken);
+      }
+    } catch (_) {
+      // Ignore network/server errors during logout to guarantee client teardown
+    } finally {
+      await tokenStorage.clearTokens();
+      state = const AuthUnauthenticated();
+    }
   }
 
   Future<bool> _attemptTokenRefresh() async {

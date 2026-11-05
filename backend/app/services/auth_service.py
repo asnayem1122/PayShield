@@ -46,10 +46,11 @@ class AccountLockedError(AuthenticationError):
 
 
 class AccountSuspendedError(AuthenticationError):
-    """Exception raised when account has been suspended."""
+    """Exception raised internally when account has been suspended."""
 
-    def __init__(self, detail: str = "Account is suspended. Please contact your system administrator."):
-        super().__init__(detail=detail, status_code=403)
+    def __init__(self, detail: str = "Invalid email or password"):
+        # Returns generic 401 unauthenticated to prevent account enumeration
+        super().__init__(detail=detail, status_code=401)
 
 
 class AuthService:
@@ -68,11 +69,35 @@ class AuthService:
         if user is None:
             # Constant-time comparison to prevent timing enumeration
             verify_password("dummy_password_timing_mitigation", DUMMY_BCRYPT_HASH)
+            audit = AuditLog(
+                actor_type="SYSTEM",
+                actor_id="anonymous",
+                action="USER_LOGIN_FAILED",
+                entity_type="USER",
+                entity_id="unknown",
+                details={"email": normalized_email, "reason": "USER_NOT_FOUND"},
+                ip_address=ip_address,
+            )
+            AuditLogRepository.create(session, audit)
+            session.commit()
             raise AuthenticationError("Invalid email or password")
 
-        # Check account suspension
+        # Anti-enumeration for suspended accounts: verify password for timing consistency,
+        # log internally with specific reason, but fail with generic 401
         if user.status == "SUSPENDED":
-            raise AccountSuspendedError()
+            verify_password(request.password, user.password_hash)
+            audit = AuditLog(
+                actor_type=user.role,
+                actor_id=str(user.id),
+                action="USER_LOGIN_FAILED",
+                entity_type="USER",
+                entity_id=str(user.id),
+                details={"email": user.email, "reason": "ACCOUNT_SUSPENDED"},
+                ip_address=ip_address,
+            )
+            AuditLogRepository.create(session, audit)
+            session.commit()
+            raise AuthenticationError("Invalid email or password")
 
         # Check temporal lockout
         now = datetime.now(timezone.utc)
@@ -114,7 +139,7 @@ class AuthService:
                 raise AccountLockedError()
             raise AuthenticationError("Invalid email or password")
 
-        # Successful authentication
+        # Successful authentication: reset failed attempts
         UserRepository.record_successful_login(session, user)
 
         # Generate tokens
@@ -125,18 +150,20 @@ class AuthService:
             merchant_id=user.merchant_id,
         )
 
+        family_id = uuid.uuid4()
         refresh_jti = str(uuid.uuid4())
         refresh_token, refresh_jti, refresh_expires_at = create_refresh_token(
             user_id=user.id,
             jti=refresh_jti,
         )
 
-        # Persist session with refresh token JTI
+        # Persist session with refresh token JTI and isolated session family ID
         AuthSessionRepository.create_session(
             session=session,
             user_id=user.id,
             refresh_token_jti=refresh_jti,
             expires_at=refresh_expires_at,
+            family_id=family_id,
         )
 
         # Audit log successful login
@@ -146,7 +173,11 @@ class AuthService:
             action="USER_LOGIN_SUCCESS",
             entity_type="USER",
             entity_id=str(user.id),
-            details={"email": user.email, "role": user.role},
+            details={
+                "email": user.email,
+                "role": user.role,
+                "family_id": str(family_id),
+            },
             ip_address=ip_address,
         )
         AuditLogRepository.create(session, audit)
@@ -178,7 +209,7 @@ class AuthService:
         refresh_token_str: str,
         ip_address: str | None = None,
     ) -> TokenResponse:
-        """Rotate refresh token: validate existing session, revoke it, and issue fresh token pair."""
+        """Rotate refresh token: validate existing session with atomic row lock, revoke it, and issue fresh token pair."""
         try:
             payload = decode_jwt_token(refresh_token_str, expected_type="refresh")
         except ValueError as e:
@@ -194,15 +225,33 @@ class AuthService:
         except ValueError:
             raise AuthenticationError("Invalid user identity in token", status_code=401)
 
-        auth_session = AuthSessionRepository.get_by_jti(session, jti)
+        # Atomic row lock to prevent race conditions during rotation
+        auth_session = AuthSessionRepository.get_by_jti_for_update(session, jti)
         if auth_session is None:
             raise AuthenticationError("Refresh session not found or revoked", status_code=401)
 
         if auth_session.revoked_at is not None:
-            # Token reuse detected on a revoked session! Revoke all sessions for safety.
-            AuthSessionRepository.revoke_all_for_user(session, user_id)
+            # Token reuse detected on a revoked session! Revoke only the affected session family (device lineage)
+            revoked_count = AuthSessionRepository.revoke_family(session, auth_session.family_id)
+            audit = AuditLog(
+                actor_type="SYSTEM",
+                actor_id=str(user_id),
+                action="REFRESH_TOKEN_REUSE_DETECTED",
+                entity_type="AUTH_SESSION",
+                entity_id=str(auth_session.id),
+                details={
+                    "compromised_jti": jti,
+                    "family_id": str(auth_session.family_id),
+                    "revoked_count": revoked_count,
+                },
+                ip_address=ip_address,
+            )
+            AuditLogRepository.create(session, audit)
             session.commit()
-            raise AuthenticationError("Revoked refresh token presented; all active sessions terminated for security", status_code=401)
+            raise AuthenticationError(
+                "Revoked refresh token presented; session family terminated for security",
+                status_code=401,
+            )
 
         now = datetime.now(timezone.utc)
         if auth_session.expires_at < now:
@@ -214,7 +263,7 @@ class AuthService:
         if user is None or user.status == "SUSPENDED":
             raise AuthenticationError("User account is inactive or suspended", status_code=401)
 
-        # Token Rotation: Revoke current session, issue new pair with new JTI
+        # Token Rotation: Revoke current session, issue new pair maintaining the SAME family_id
         AuthSessionRepository.revoke_session(session, auth_session)
 
         new_access_token = create_access_token(
@@ -235,6 +284,7 @@ class AuthService:
             user_id=user.id,
             refresh_token_jti=new_refresh_jti,
             expires_at=new_refresh_expires_at,
+            family_id=auth_session.family_id,
         )
 
         # Audit log token refresh
@@ -244,7 +294,11 @@ class AuthService:
             action="TOKEN_ROTATED",
             entity_type="USER",
             entity_id=str(user.id),
-            details={"rotated_jti": jti, "new_jti": new_refresh_jti},
+            details={
+                "rotated_jti": jti,
+                "new_jti": new_refresh_jti,
+                "family_id": str(auth_session.family_id),
+            },
             ip_address=ip_address,
         )
         AuditLogRepository.create(session, audit)
@@ -281,19 +335,25 @@ class AuthService:
         user = UserRepository.get_by_id(session, user_id)
         actor_role = user.role if user else "SYSTEM"
 
+        revoked_count = 0
+        family_id_str = None
         if refresh_token_str:
             try:
                 payload = decode_jwt_token(refresh_token_str, expected_type="refresh")
                 jti = payload.get("jti")
                 if jti:
-                    auth_session = AuthSessionRepository.get_by_jti(session, jti)
+                    auth_session = AuthSessionRepository.get_by_jti_for_update(session, jti)
                     if auth_session and auth_session.user_id == user_id:
-                        AuthSessionRepository.revoke_session(session, auth_session)
+                        # Revoke only the session family associated with this client/device
+                        family_id_str = str(auth_session.family_id)
+                        revoked_count = AuthSessionRepository.revoke_family(
+                            session, auth_session.family_id
+                        )
             except Exception:
-                # If token decode fails, fallback to revoking all sessions
-                AuthSessionRepository.revoke_all_for_user(session, user_id)
+                # If token decode or lookup fails, fallback to revoking all sessions for user
+                revoked_count = AuthSessionRepository.revoke_all_for_user(session, user_id)
         else:
-            AuthSessionRepository.revoke_all_for_user(session, user_id)
+            revoked_count = AuthSessionRepository.revoke_all_for_user(session, user_id)
 
         # Audit log logout event
         audit = AuditLog(
@@ -302,7 +362,11 @@ class AuthService:
             action="USER_LOGOUT",
             entity_type="USER",
             entity_id=str(user_id),
-            details={"revoked": True},
+            details={
+                "revoked": True,
+                "revoked_sessions": revoked_count,
+                "family_id": family_id_str,
+            },
             ip_address=ip_address,
         )
         AuditLogRepository.create(session, audit)

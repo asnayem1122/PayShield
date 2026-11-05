@@ -1,22 +1,16 @@
 """Integration tests for Authentication API (/api/v1/auth/*)."""
 
-import time
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import create_access_token
-from app.models.auth_session import AuthSession
-from app.models.user import User
 
 
-def test_login_success_merchant(client: TestClient):
+def test_login_success_merchant(client: TestClient, merchant_password: str):
     """Verify successful login for canonical merchant returns tokens and summary."""
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "merchant@techpulse.bd", "password": "PayShield2026!"},
+        json={"email": "merchant@techpulse.bd", "password": merchant_password},
     )
     assert response.status_code == 200
     data = response.json()
@@ -29,11 +23,11 @@ def test_login_success_merchant(client: TestClient):
     assert data["user"]["merchant_id"] is not None
 
 
-def test_login_success_analyst(client: TestClient):
+def test_login_success_analyst(client: TestClient, analyst_password: str):
     """Verify successful login for canonical analyst."""
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "analyst.shafiq@payshield.internal", "password": "PayShield2026!"},
+        json={"email": "analyst.shafiq@payshield.internal", "password": analyst_password},
     )
     assert response.status_code == 200
     data = response.json()
@@ -85,12 +79,12 @@ def test_get_current_user_profile_unauthenticated(client: TestClient):
     assert response.headers["content-type"].startswith("application/problem+json")
 
 
-def test_token_rotation_on_refresh(client: TestClient):
+def test_token_rotation_on_refresh(client: TestClient, analyst_password: str):
     """Verify refresh token rotation: old session revoked, new token pair issued."""
     # 1. Login to get initial tokens
     login_res = client.post(
         "/api/v1/auth/login",
-        json={"email": "analyst.shafiq@payshield.internal", "password": "PayShield2026!"},
+        json={"email": "analyst.shafiq@payshield.internal", "password": analyst_password},
     )
     tokens = login_res.json()
     orig_refresh = tokens["refresh_token"]
@@ -113,12 +107,12 @@ def test_token_rotation_on_refresh(client: TestClient):
     assert reuse_res.status_code == 401
 
 
-def test_logout_revokes_session(client: TestClient):
+def test_logout_revokes_session(client: TestClient, merchant_password: str):
     """Verify logout revokes the session and subsequent refresh fails."""
     # 1. Login
     login_res = client.post(
         "/api/v1/auth/login",
-        json={"email": "merchant@techpulse.bd", "password": "PayShield2026!"},
+        json={"email": "merchant@techpulse.bd", "password": merchant_password},
     )
     tokens = login_res.json()
     auth_header = {"Authorization": f"Bearer {tokens['access_token']}"}

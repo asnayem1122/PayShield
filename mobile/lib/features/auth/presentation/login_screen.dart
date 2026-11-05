@@ -20,7 +20,7 @@ class LoginScreen extends ConsumerStatefulWidget {
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _emailController = TextEditingController(text: 'merchant@techpulse.bd');
-  final _passwordController = TextEditingController(text: 'PayShield2026!');
+  final _passwordController = TextEditingController();
 
   @override
   void dispose() {
@@ -31,7 +31,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   void _selectRole(DemoRole role) {
     ref.read(demoRoleProvider.notifier).setRole(role);
-    _passwordController.text = 'PayShield2026!';
+    _passwordController.clear();
     switch (role) {
       case DemoRole.merchant:
         _emailController.text = 'merchant@techpulse.bd';
@@ -233,7 +233,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           controller: _passwordController,
                           obscureText: true,
                           prefixIcon: Icons.lock_outline_rounded,
-                          helperText: 'Canonical Demo Password: PayShield2026!',
                           readOnly: isAuthenticating,
                         ),
                         const SizedBox(height: AppSpacing.lg),

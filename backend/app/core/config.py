@@ -5,12 +5,25 @@ masking and safe SQLAlchemy URL generation for runtime and migration roles.
 """
 
 from pathlib import Path
-from pydantic import Field, SecretStr
+import secrets
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
 # Root of backend directory where .env may reside
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+
+INSECURE_SECRET_PATTERNS = (
+    "insecure",
+    "change_this",
+    "replace_in_production",
+    "default",
+    "secret",
+    "placeholder",
+    "payshielddefault",
+    "development_jwt",
+    "123456",
+)
 
 
 class Settings(BaseSettings):
@@ -51,11 +64,12 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = 30
 
     # Security & JWT Configuration
+    # Uses ephemeral cryptographic random defaults when unconfigured in development
     SECRET_KEY: SecretStr = Field(
-        default=SecretStr("payshield_development_jwt_secret_key_minimum_32_bytes_long_for_hs256!")
+        default_factory=lambda: SecretStr(secrets.token_urlsafe(32))
     )
     JWT_SECRET_KEY: SecretStr = Field(
-        default=SecretStr("payshield_development_jwt_secret_key_minimum_32_bytes_long_for_hs256!")
+        default_factory=lambda: SecretStr(secrets.token_urlsafe(32))
     )
     JWT_ALGORITHM: str = "HS256"
     JWT_ISSUER: str = "payshield-auth"
@@ -72,6 +86,36 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_security_configuration(self) -> "Settings":
+        """Harden security parameters: enforce key lengths, reject insecure placeholders, and fail closed in production."""
+        is_prod = self.ENVIRONMENT.lower() in ("staging", "production")
+        secret_val = self.JWT_SECRET_KEY.get_secret_value()
+
+        if is_prod:
+            if not secret_val or len(secret_val) < 32:
+                raise ValueError(
+                    f"In {self.ENVIRONMENT} environment, JWT_SECRET_KEY must be explicitly configured and at least 32 characters long."
+                )
+            lower_val = secret_val.lower()
+            for pattern in INSECURE_SECRET_PATTERNS:
+                if pattern in lower_val:
+                    raise ValueError(
+                        f"In {self.ENVIRONMENT} environment, JWT_SECRET_KEY cannot contain insecure placeholder '{pattern}'."
+                    )
+            # In staging/production, fail closed on default database passwords
+            app_pw = self.POSTGRES_PASSWORD.get_secret_value()
+            mig_pw = self.MIGRATION_POSTGRES_PASSWORD.get_secret_value()
+            if "insecure_dev_password" in app_pw or "insecure_dev_password" in mig_pw:
+                raise ValueError(
+                    f"In {self.ENVIRONMENT} environment, database passwords must not use default insecure development values."
+                )
+        else:
+            if secret_val and len(secret_val) < 32:
+                raise ValueError("JWT_SECRET_KEY must be at least 32 characters long.")
+
+        return self
 
     def get_sqlalchemy_url(self) -> URL:
         """Generate safe SQLAlchemy connection URL for runtime application role (payshield_app)."""

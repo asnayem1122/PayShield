@@ -29,6 +29,12 @@ class AuthSession(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    family_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        nullable=False,
+        index=True,
+    )
     refresh_token_jti: Mapped[str] = mapped_column(
         String(64),
         unique=True,

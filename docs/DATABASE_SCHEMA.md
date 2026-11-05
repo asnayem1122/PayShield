@@ -212,6 +212,7 @@
 |---|---|---|---|
 | `id` | UUID | NO | Primary key (`gen_random_uuid()`) |
 | `user_id` | UUID | NO | Foreign key (`users.id` CASCADE) |
+| `family_id` | UUID | NO | Device session family identifier for isolated token rotation (`gen_random_uuid()`) |
 | `refresh_token_jti` | VARCHAR(64) | NO | Unique JWT ID string of the issued refresh token |
 | `created_at` | TIMESTAMPTZ | NO | Session issuance timestamp |
 | `expires_at` | TIMESTAMPTZ | NO | Expiration timestamp |
@@ -241,3 +242,8 @@
     - `SELECT, INSERT` on `auth_sessions`
     - Column-level `UPDATE` on `auth_sessions(last_used_at, revoked_at)`
     - Denies `DELETE, TRUNCATE` on `auth_sessions`.
+- **`0004_add_session_family` (`0004_add_session_family.py`)**:
+  - Reversible forward migration (`revision = "0004_add_session_family"`).
+  - Adds `family_id: UUID` (NOT NULL, default `gen_random_uuid()`) with index `ix_auth_sessions_family_id` to `auth_sessions`.
+  - Enables device session family isolation for token rotation and selective replay termination.
+  - Reaffirms least-privilege permissions for `payshield_app`.

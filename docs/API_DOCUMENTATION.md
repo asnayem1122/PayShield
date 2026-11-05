@@ -40,7 +40,7 @@ Authorization: Bearer <access_token>
 - **Merchant**: `merchant@techpulse.bd` (Linked to PayShield Demo Merchant)
 - **Analyst**: `analyst.shafiq@payshield.internal` (Unlinked)
 - **Admin**: `admin.nayem@payshield.internal` (Unlinked)
-- **Default Password**: `PayShield2026!`
+- **Credential Provisioning**: Configured via environment variables (`PAYSHIELD_MERCHANT_PASSWORD`, `PAYSHIELD_ANALYST_PASSWORD`, `PAYSHIELD_ADMIN_PASSWORD`). No static passwords are committed to source control.
 
 ---
 
@@ -54,7 +54,7 @@ Authenticate user with email and password, issuing an access and refresh token p
   ```json
   {
     "email": "merchant@techpulse.bd",
-    "password": "PayShield2026!"
+    "password": "<ACCOUNT_PASSWORD>"
   }
   ```
 - **Response 200**:
@@ -75,8 +75,9 @@ Authenticate user with email and password, issuing an access and refresh token p
     }
   }
   ```
-- **Response 401 (RFC 9457)**: Invalid credentials (generic anti-enumeration).
+- **Response 401 (RFC 9457)**: Invalid credentials. Generic message (`"Invalid email or password"`) and constant-time dummy verification for unknown and suspended accounts to completely prevent account enumeration.
 - **Response 423 (RFC 9457)**: Account locked due to 5 consecutive failed attempts.
+- **Response 429 (RFC 9457)**: Rate limit exceeded (10 attempts per minute per IP address).
 
 #### `GET /api/v1/auth/me`
 Retrieve identity and profile for the authenticated user.
@@ -86,12 +87,15 @@ Retrieve identity and profile for the authenticated user.
 #### `POST /api/v1/auth/refresh`
 Exchange an active refresh token for a newly issued access token and rotated refresh token.
 - **Request Body**: `{"refresh_token": "..."}`
-- **Security Policy**: Refresh token rotation with immediate revocation of previous token. Replay/reuse detection revokes all active sessions for the user.
+- **Security Policy**:
+  - Refresh token rotation with atomic database row lock (`with_for_update()`).
+  - Session family isolation (`family_id`): Replay detection revokes only the compromised device's session lineage, keeping unrelated device sessions intact.
 
 #### `POST /api/v1/auth/logout`
 Revoke active session(s) upon logout.
 - **Headers**: `Authorization: Bearer <access_token>`
 - **Request Body (Optional)**: `{"refresh_token": "..."}`
+- **Security Policy**: Revokes only the authenticated device's session family when a refresh token is supplied.
 - **Response 200**: `{"status": "success", "message": "Successfully logged out"}`
 
 ---

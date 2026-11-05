@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.core.rate_limiter import login_rate_limiter
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -61,7 +62,18 @@ def login(
     db: Session = Depends(get_db),
 ):
     """Authenticate with email and password, issuing an access and refresh token pair."""
-    client_ip = request.client.host if request.client else None
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Enforce rate limiting per client IP to mitigate credential brute force
+    if not login_rate_limiter.is_allowed(client_ip):
+        return _problem_response(
+            status_code=429,
+            title="Too Many Requests",
+            detail="Too many login attempts. Please try again later.",
+            instance="/api/v1/auth/login",
+            error_type="https://payshield.internal/errors/rate-limit-exceeded",
+        )
+
     try:
         return AuthService.login(db, payload, ip_address=client_ip)
     except AccountLockedError as e:
@@ -74,11 +86,11 @@ def login(
         )
     except AccountSuspendedError as e:
         return _problem_response(
-            status_code=403,
-            title="Account Suspended",
+            status_code=401,
+            title="Unauthorized",
             detail=e.detail,
             instance="/api/v1/auth/login",
-            error_type="https://payshield.internal/errors/account-suspended",
+            error_type="https://payshield.internal/errors/invalid-credentials",
         )
     except AuthenticationError as e:
         return _problem_response(
