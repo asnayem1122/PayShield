@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     ACCOUNT_LOCKOUT_MINUTES: int = 15
     BCRYPT_ROUNDS: int = 12
 
+    # CORS Configuration
+    CORS_ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=lambda: ["*"]
+    )
+
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",
         env_file_encoding="utf-8",
@@ -110,6 +115,11 @@ class Settings(BaseSettings):
             if "insecure_dev_password" in app_pw or "insecure_dev_password" in mig_pw:
                 raise ValueError(
                     f"In {self.ENVIRONMENT} environment, database passwords must not use default insecure development values."
+                )
+            # In staging/production, fail closed on wildcard CORS
+            if "*" in self.CORS_ALLOWED_ORIGINS:
+                raise ValueError(
+                    f"In {self.ENVIRONMENT} environment, CORS_ALLOWED_ORIGINS cannot contain wildcard '*' when credentials are permitted."
                 )
         else:
             if secret_val and len(secret_val) < 32:

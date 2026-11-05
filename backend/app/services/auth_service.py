@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import (
+    AuthenticationSecurityError,
     create_access_token,
     create_refresh_token,
     decode_jwt_token,
@@ -212,7 +213,7 @@ class AuthService:
         """Rotate refresh token: validate existing session with atomic row lock, revoke it, and issue fresh token pair."""
         try:
             payload = decode_jwt_token(refresh_token_str, expected_type="refresh")
-        except ValueError as e:
+        except (AuthenticationSecurityError, ValueError) as e:
             raise AuthenticationError(f"Invalid refresh token: {str(e)}", status_code=401)
 
         user_id_str = payload.get("sub")

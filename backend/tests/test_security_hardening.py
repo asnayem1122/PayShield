@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings, settings
 from app.core.rate_limiter import login_rate_limiter
+from app.core.security import TokenInvalidError, decode_jwt_token
 from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.repositories.auth_session_repository import AuthSessionRepository
@@ -234,3 +235,83 @@ def test_login_rate_limiting(client: TestClient):
         json={"email": "random@nonexistent.domain", "password": "WrongPassword123!"},
     )
     assert res_restored.status_code == 401
+
+
+def test_cors_validation_production_wildcard_rejected():
+    """Verify production settings reject wildcard '*' CORS when credentials are permitted."""
+    with pytest.raises(ValueError, match="CORS_ALLOWED_ORIGINS cannot contain wildcard"):
+        Settings(
+            ENVIRONMENT="production",
+            POSTGRES_PASSWORD=SecretStr("prod_strong_app_password_98765"),
+            MIGRATION_POSTGRES_PASSWORD=SecretStr("prod_strong_mig_password_98765"),
+            JWT_SECRET_KEY=SecretStr("a_very_strong_cryptographic_random_key_for_testing_abcdefghij!"),
+            CORS_ALLOWED_ORIGINS=["*"],
+        )
+
+
+def test_cors_validation_production_explicit_origin_allowed():
+    """Verify production settings succeed with explicit allowed origin domain."""
+    prod_settings = Settings(
+        ENVIRONMENT="production",
+        POSTGRES_PASSWORD=SecretStr("prod_strong_app_password_98765"),
+        MIGRATION_POSTGRES_PASSWORD=SecretStr("prod_strong_mig_password_98765"),
+        JWT_SECRET_KEY=SecretStr("a_very_strong_cryptographic_random_key_for_testing_abcdefghij!"),
+        CORS_ALLOWED_ORIGINS=["https://console.payshield.internal"],
+    )
+    assert prod_settings.CORS_ALLOWED_ORIGINS == ["https://console.payshield.internal"]
+
+
+def test_token_type_confusion_access_as_refresh_rejected(client: TestClient, merchant_password: str):
+    """Verify presenting an access token to /auth/refresh fails with token type error."""
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "merchant@techpulse.bd", "password": merchant_password},
+    )
+    assert login_res.status_code == 200
+    access_token = login_res.json()["access_token"]
+
+    # Attempt to refresh using access token
+    refresh_res = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": access_token},
+    )
+    assert refresh_res.status_code == 401
+    assert "type" in refresh_res.json()["detail"].lower()
+
+
+def test_token_type_confusion_refresh_as_bearer_rejected(client: TestClient, merchant_password: str):
+    """Verify presenting a refresh token as Bearer token to /auth/me fails with token type error."""
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "merchant@techpulse.bd", "password": merchant_password},
+    )
+    assert login_res.status_code == 200
+    refresh_token = login_res.json()["refresh_token"]
+
+    # Attempt to authenticate /auth/me using refresh token
+    me_res = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {refresh_token}"},
+    )
+    assert me_res.status_code == 401
+    assert "type" in me_res.json()["detail"].lower()
+
+
+def test_token_algorithm_none_rejected():
+    """Verify decode_jwt_token rejects insecure unsigned tokens with alg=none."""
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "sub": "00000000-0000-0000-0000-000000000000",
+        "exp": 9999999999,
+        "iat": 1000000000,
+        "jti": "mock-jti",
+        "type": "access",
+    }).encode()).decode().rstrip("=")
+    unsigned_token = f"{header}.{payload}."
+
+    with pytest.raises(TokenInvalidError):
+        decode_jwt_token(unsigned_token, expected_type="access")
+

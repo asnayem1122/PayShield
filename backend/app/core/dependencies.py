@@ -7,7 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import decode_jwt_token
+from app.core.security import AuthenticationSecurityError, decode_jwt_token
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 
@@ -30,7 +30,7 @@ def get_current_user(
     token = credentials.credentials
     try:
         payload = decode_jwt_token(token, expected_type="access")
-    except ValueError as e:
+    except (AuthenticationSecurityError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid or expired token: {str(e)}",
