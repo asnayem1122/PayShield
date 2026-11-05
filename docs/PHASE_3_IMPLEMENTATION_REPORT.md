@@ -5,7 +5,8 @@
 - **Repository:** `D:\Code\PayShield`
 - **Branch:** `main`
 - **Baseline Commit:** `80e5d5f`
-- **Status:** **FULLY IMPLEMENTED & VERIFIED**
+- **Latest Hardened Commit:** `3f6018f`
+- **Status:** **FULLY IMPLEMENTED, HARDENED & VERIFIED**
 
 ---
 
@@ -19,27 +20,33 @@ All requirements have been met without breaking or regressing any Phase 1 or Pha
 
 ## 2. Key Architecture Components
 
-### 2.1. Relational Schema & Alembic Migration (`0003_create_users_table`)
-A forward and reversible migration (`0003_create_users_table.py`, down revision `0002_revoke_analyst_update`) was created and applied to the PostgreSQL database:
-1. **`users` Table**:
-   - `id`: UUID Primary Key (`gen_random_uuid()`).
-   - `email`: VARCHAR(255) Unique, normalized lowercase.
-   - `full_name`: VARCHAR(255) Not Null.
-   - `password_hash`: VARCHAR(255) Not Null (Bcrypt work factor 12; never exposed in API responses).
-   - `role`: VARCHAR(50) with Check Constraint `role IN ('MERCHANT', 'ANALYST', 'ADMIN')`.
-   - `status`: VARCHAR(50) with Check Constraint `status IN ('ACTIVE', 'SUSPENDED')`.
-   - `merchant_id`: UUID Foreign Key to `merchants.id` (`ON DELETE RESTRICT`).
-   - **Role/Merchant Linkage Constraint**:
-     `CHECK ((role = 'MERCHANT' AND merchant_id IS NOT NULL) OR (role IN ('ANALYST', 'ADMIN') AND merchant_id IS NULL))`.
-   - `failed_login_attempts`: Integer with Check Constraint `>= 0`.
-   - `locked_until`: TIMESTAMPTZ for temporal account lockout.
-   - `last_login_at`, `created_at`, `updated_at`: UTC timestamps.
-2. **`auth_sessions` Table**:
-   - `id`: UUID Primary Key (`gen_random_uuid()`).
-   - `user_id`: UUID Foreign Key to `users.id` (`ON DELETE CASCADE`).
-   - `refresh_token_jti`: VARCHAR(64) Unique (indexed).
-   - `expires_at`, `last_used_at`, `revoked_at`: Session tracking timestamps.
-   - Check Constraint: `expires_at > created_at`.
+### 2.1. Relational Schema & Alembic Migrations
+Two forward and reversible migrations were created and applied to the PostgreSQL database:
+
+1. **`0003_create_users_table.py`** (down revision `0002_revoke_analyst_update`):
+   - **`users` Table**:
+     - `id`: UUID Primary Key (`gen_random_uuid()`).
+     - `email`: VARCHAR(255) Unique, normalized lowercase.
+     - `full_name`: VARCHAR(255) Not Null.
+     - `password_hash`: VARCHAR(255) Not Null (Bcrypt work factor 12; never exposed in API responses).
+     - `role`: VARCHAR(50) with Check Constraint `role IN ('MERCHANT', 'ANALYST', 'ADMIN')`.
+     - `status`: VARCHAR(50) with Check Constraint `status IN ('ACTIVE', 'SUSPENDED')`.
+     - `merchant_id`: UUID Foreign Key to `merchants.id` (`ON DELETE RESTRICT`).
+     - **Role/Merchant Linkage Constraint**:
+       `CHECK ((role = 'MERCHANT' AND merchant_id IS NOT NULL) OR (role IN ('ANALYST', 'ADMIN') AND merchant_id IS NULL))`.
+     - `failed_login_attempts`: Integer with Check Constraint `>= 0`.
+     - `locked_until`: TIMESTAMPTZ for temporal account lockout.
+     - `last_login_at`, `created_at`, `updated_at`: UTC timestamps.
+   - **`auth_sessions` Table**:
+     - `id`: UUID Primary Key (`gen_random_uuid()`).
+     - `user_id`: UUID Foreign Key to `users.id` (`ON DELETE CASCADE`).
+     - `refresh_token_jti`: VARCHAR(64) Unique (indexed).
+     - `expires_at`, `last_used_at`, `revoked_at`: Session tracking timestamps.
+     - Check Constraint: `expires_at > created_at`.
+
+2. **`0004_add_session_family.py`** (down revision `0003_create_users_table`):
+   - Added `family_id: UUID` (NOT NULL, default `gen_random_uuid()`, indexed via `ix_auth_sessions_family_id`) to `auth_sessions`.
+   - Enables device session family isolation for token rotation and selective replay termination.
 
 ### 2.2. PostgreSQL Least-Privilege Grants
 Following the project's zero-trust database permission model:
@@ -51,21 +58,23 @@ Following the project's zero-trust database permission model:
 - `payshield_app` is strictly **DENIED** `DELETE` and `TRUNCATE` on both tables.
 
 ### 2.3. Cryptographic & JWT Security Standard (RFC 7519)
-- **Password Hashing**: Bcrypt with salt rounds = 12.
-- **Access Tokens**: Short-lived (15 minutes default), signed with HMAC SHA256 using a 74-character high-entropy secret. Claims include `sub` (user UUID), `role`, `email`, `merchant_id`, `iss` (`payshield-auth`), `aud` (`payshield-client`), `iat`, `exp`, `jti`, and `type="access"`.
+- **Password Hashing**: Bcrypt with salt rounds = 12 via `app.core.security`.
+- **Dynamic Configuration**: `JWT_SECRET_KEY` uses dynamic ephemeral keys in development, and enforces minimum 32 characters and rejection of weak placeholders in staging/production.
+- **Access Tokens**: Short-lived (15 minutes default), signed with HMAC SHA256. Claims include `sub` (user UUID), `role`, `email`, `merchant_id`, `iss` (`payshield-auth`), `aud` (`payshield-client`), `iat`, `exp`, `jti`, and `type="access"`.
 - **Refresh Tokens**: Long-lived (7 days default), signed with unique `jti`. Stored in `auth_sessions`.
-- **Refresh Token Rotation**: Upon each refresh, the presented refresh token is immediately revoked in the database and a new token pair with a fresh JTI is minted.
-- **Replay / Reuse Detection**: Presenting an already-revoked refresh token triggers immediate security revocation of all active sessions for that user.
+- **Refresh Token Rotation with Atomic Row Lock**: Upon refresh, `SELECT ... FOR UPDATE` row locking prevents concurrency races. The presented token is revoked, and a new token pair maintaining the same `family_id` is issued.
+- **Session Family Isolation**: Replay of a revoked token terminates only the affected device's session lineage (`family_id`), leaving sessions on other user devices active.
 - **Strict Decoding**: Enforces algorithm (`HS256`), rejects `alg=none`, validates issuer, audience, type, and expiration timestamps.
 
-### 2.4. Anti-Enumeration & RFC 9457 Problem Details
+### 2.4. Anti-Enumeration, IP Rate Limiting & RFC 9457 Problem Details
 - Constant-time dummy password hashing on nonexistent usernames to prevent timing-based user enumeration.
-- Identical generic error message (`"Invalid email or password"`) for non-existent users and incorrect passwords.
+- Identical generic error message (`"Invalid email or password"`) for non-existent users and suspended accounts.
+- Thread-safe sliding-window rate limiter in `app.core.rate_limiter` restricting `/api/v1/auth/login` to 10 attempts per minute per IP address.
 - Temporal account lockout (HTTP 423 Locked) engaging after 5 consecutive failed login attempts.
 - All errors formatted according to RFC 9457 `application/problem+json`:
   ```json
   {
-    "type": "https://payshield.internal/errors/401",
+    "type": "https://payshield.internal/errors/invalid-credentials",
     "title": "Unauthorized",
     "status": 401,
     "detail": "Invalid email or password",
@@ -88,10 +97,11 @@ Enforced at the FastAPI dependency layer (`get_current_user`, `require_role`, `r
 
 ### 2.6. Canonical Demo User Seeding (`seed_demo_users.py`)
 An idempotent, verifiable seeding script was implemented using `payshield_migrator`:
-- **Merchant**: `merchant@techpulse.bd` linked to `PayShield Demo Merchant`.
+- **Merchant**: `merchant@techpulse.bd` linked to `PayShield Demo Merchant` (strictly verified without arbitrary fallback).
 - **Analyst**: `analyst.shafiq@payshield.internal` (unlinked).
 - **Admin**: `admin.nayem@payshield.internal` (unlinked).
-- Supports `--verify-only` for non-destructive CI/CD audits.
+- Passwords supplied strictly via environment variables (`PAYSHIELD_MERCHANT_PASSWORD`, `PAYSHIELD_ANALYST_PASSWORD`, `PAYSHIELD_ADMIN_PASSWORD`).
+- Supports `--verify-only`, `--verify-passwords`, and `--rotate-passwords` for non-destructive CI/CD audits and atomic credential rotation.
 
 ### 2.7. Flutter Authentication & Secure Storage Integration
 1. **Token Persistence**:
@@ -99,15 +109,16 @@ An idempotent, verifiable seeding script was implemented using `payshield_migrat
    - `InMemoryTokenStorage` for fast, hermetic widget and unit testing.
 2. **Networking Interceptor (`ApiClient`)**:
    - Automatically injects `Authorization: Bearer <access_token>` into outgoing requests.
-   - Intercepts HTTP 401 responses, executes seamless token refresh once, and replays failed requests.
+   - Single-flight refresh lock: concurrent 401 responses coalesce onto a single shared `Future<bool>` refresh flight, preventing refresh races.
    - Parses RFC 9457 Problem Details into user-friendly `HttpException` messages.
 3. **Riverpod State Management (`AuthController`)**:
    - States: `AuthInitial`, `AuthAuthenticating`, `AuthAuthenticated`, `AuthUnauthenticated`, `AuthError`.
-   - Hooks into `demoRoleProvider` to seamlessly synchronize UI context with server-assigned roles.
-   - Methods: `login()`, `logout()`, `checkAuthStatus()`.
+   - Synchronizes UI context with server-assigned roles via `demoRoleProvider`.
+   - Logout wrapped in `try ... finally` block, ensuring local credential teardown even on server failure.
 4. **Login Screen & Profile Screen**:
-   - `LoginScreen` wires form inputs to `authController.login(email, password)` with loading states and error banner rendering.
-   - "Quick Demo Role" selector prefills authentic credentials for rapid viva demonstration.
+   - `LoginScreen` wires inputs to `authController.login(email, password)` with loading states and error banner rendering.
+   - Password field is empty by default; helper text with static credentials has been removed.
+   - "Quick Demo Role" selector prefills identity email only.
    - `ProfileScreen` displays real authenticated user identity and provides functional sign out.
 
 ---
@@ -115,16 +126,17 @@ An idempotent, verifiable seeding script was implemented using `payshield_migrat
 ## 3. Verification & Evidence
 
 ### 3.1. Backend Automated Test Suite
-All **118 pytest tests** passed with 0 failures:
+All **126 pytest tests** passed with 0 failures:
+- `backend/tests/test_security_hardening.py` (8 tests): JWT secret validation, fail-closed seed env vars, password rotation workflow, session family isolation, anti-enumeration, IP rate limiting.
 - `backend/tests/test_api_auth.py` (8 tests): login, lockout, token rotation, reuse revocation, logout, profile.
 - `backend/tests/test_rbac_authorization.py` (7 tests): 401 unauthenticated rejection, 403 merchant role prohibitions, analyst access, admin access, scoped dashboard.
 - `backend/tests/test_merchant_isolation.py` (3 tests): query scoping, 404 anti-enumeration IDOR prevention, merchant_id tamper override.
 - `backend/tests/test_permissions_phase3.py` (4 tests): column-level UPDATE and table-level UPDATE/DELETE/TRUNCATE denials for `users` and `auth_sessions`.
-- All 96 existing Phase 2 tests (transactions, dashboard, cases, heuristic risk scoring, seed recovery, seed verification, database lifecycle, permissions) remained 100% green.
+- All 96 existing Phase 2 tests (transactions, dashboard, cases, heuristic risk scoring, seed recovery, seed verification, database lifecycle, permissions) remain 100% green.
 
 ### 3.2. Flutter Automated Test Suite
-All **45 flutter_test tests** passed with 0 failures:
-- `mobile/test/unit/auth_test.dart` (7 tests): `InMemoryTokenStorage`, `UserSession` JSON parsing, `AuthController` login/logout/refresh lifecycle.
+All **47 flutter_test tests** passed with 0 failures:
+- `mobile/test/unit/auth_test.dart` (8 tests): `InMemoryTokenStorage`, `UserSession` JSON parsing, `AuthController` login/logout/refresh lifecycle, logout failure resilience.
 - `mobile/test/unit/api_client_and_integration_test.dart` (12 tests): Money parsing, Decimal serialization, ApiClient base URLs.
 - `mobile/test/unit/risk_constants_and_data_test.dart` (8 tests): Risk score bounds, canonical mock totals.
 - `mobile/test/unit/theme_test.dart` (7 tests): WCAG AAA/AA contrast verification.
